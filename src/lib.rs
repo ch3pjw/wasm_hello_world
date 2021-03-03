@@ -6,7 +6,7 @@ use {
     wasm_bindgen_futures::spawn_local,
 
     cfg_if::cfg_if,
-    futures::{stream::StreamExt},
+    futures::{SinkExt, stream::StreamExt},
     log::{error, info},
     pharos::*,
     ws_stream_wasm::*,
@@ -41,36 +41,42 @@ pub fn main() {
     utils::set_panic_hook();
     init_log();
     spawn_local(async {
-        let (mut ws, _wsio) = match WsMeta::connect("wss://echo.websocket.org", None).await {
+        let (mut ws, mut stream) = match WsMeta::connect("wss://echo.websocket.org", None).await {
             Ok(x) => x,
             Err(ws_err) => {
                 error!("Error opening WebSocket {:?}", ws_err);
                 return;
             }
         };
+
         let mut events = ws.observe(ObserveConfig::default()).await.expect_throw("observe died");
+        spawn_local(async move {
+            loop {
+                match events.next().await {
+                    None => {
+                        error!("WebSocket closed unexpectedly!");
+                        break;
+                    },
+                    Some(WsEvent::Closed(close_event)) => {
+                        if close_event.was_clean {
+                            info!("WebSocket closed cleanly");
+                        } else {
+                            error!("WebSocket closed uncleanly: {}", close_event.reason);
+                        }
+                        break;
+                    },
+                    Some(WsEvent::WsErr(ws_err)) => error!("Received error: {:?}", ws_err),
+                    Some(event) => info!("Received event: {:?}", event),
+                }
+            }
+        });
+
+        stream.send(WsMessage::Text("Hello World!".to_string())).await.expect_throw("sending failed");
+        info!("blah {:?}", stream.next().await);
+
         match ws.close().await {
             Ok(close_event) => info!("Logging closed here too {:?}", close_event),
             Err(ws_err) => error!("Got an error: {:?}", ws_err)
-        }
-
-        loop {
-            match events.next().await {
-                None => {
-                    error!("WebSocket closed unexpectedly!");
-                    break;
-                },
-                Some(WsEvent::Closed(close_event)) => {
-                    if close_event.was_clean {
-                        info!("WebSocket closed cleanly");
-                    } else {
-                        error!("WebSocket closed uncleanly: {}", close_event.reason);
-                    }
-                    break;
-                },
-                Some(WsEvent::WsErr(ws_err)) => error!("Received error: {:?}", ws_err),
-                Some(event) => info!("Received event: {:?}", event),
-            }
         }
         info!("Hello, wasm-hello-world! I closed a websocket");
     });
