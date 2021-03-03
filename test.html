@@ -6,12 +6,8 @@
   </head>
   <body>
     <script type="module">
-        import("./pkg/wasm_hello_world.js")
-          .catch(e => console.error("Error importing:", e))
-          .then(async (module) => {
-             await module.default();
-             module.main();
-          });
+        import go from "./pkg/wasm_hello_world.js";
+        go();
     </script>
   </body>
 </html>
