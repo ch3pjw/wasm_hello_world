@@ -9,9 +9,8 @@
         import("./pkg/wasm_hello_world.js")
           .catch(e => console.error("Error importing:", e))
           .then(async (module) => {
-             console.log("woot", module);
              await module.default();
-             module.greet();
+             module.main();
           });
     </script>
   </body>

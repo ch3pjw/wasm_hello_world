@@ -21,7 +21,7 @@ extern {
 }
 
 #[wasm_bindgen]
-pub fn greet() {
+pub fn main() {
     let program = async {
         let (mut ws, _wsio) = WsMeta::connect("wss://echo.websocket.org", None).await.expect_throw( "failed :-(");
         let mut evts = ws.observe(ObserveConfig::default()).await.expect_throw("observe died");
