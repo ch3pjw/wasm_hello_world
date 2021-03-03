@@ -43,8 +43,10 @@ pub fn main() {
         let (mut ws, _wsio) = WsMeta::connect("wss://echo.websocket.org", None).await.expect_throw( "failed :-(");
         let mut evts = ws.observe(ObserveConfig::default()).await.expect_throw("observe died");
         ws.close().await;
-        assert!(evts.next().await.unwrap_throw().is_closing());
-        assert!(evts.next().await.unwrap_throw().is_closed());
+
+        while let Some(evt) = evts.next().await {
+            info!("Received event: {:?}", evt);
+        }
         info!("Hello, wasm-hello-world! I closed a websocket");
     });
 }
