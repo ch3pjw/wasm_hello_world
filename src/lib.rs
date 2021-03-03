@@ -41,7 +41,13 @@ pub fn main() {
     utils::set_panic_hook();
     init_log();
     spawn_local(async {
-        let (mut ws, _wsio) = WsMeta::connect("wss://echo.websocket.org", None).await.expect_throw( "failed :-(");
+        let (mut ws, _wsio) = match WsMeta::connect("wss://echo.websocket.org", None).await {
+            Ok(x) => x,
+            Err(ws_err) => {
+                error!("Error opening WebSocket {:?}", ws_err);
+                return;
+            }
+        };
         let mut events = ws.observe(ObserveConfig::default()).await.expect_throw("observe died");
         match ws.close().await {
             Ok(close_event) => info!("Logging closed here too {:?}", close_event),
