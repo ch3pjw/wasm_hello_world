@@ -40,6 +40,7 @@ extern {
 pub fn main() {
     utils::set_panic_hook();
     init_log();
+    yew::App::<Model>::new().mount_to_body();
     spawn_local(async {
         let (mut ws, mut stream) = match WsMeta::connect("wss://echo.websocket.org", None).await {
             Ok(x) => x,
@@ -80,4 +81,29 @@ pub fn main() {
         }
         info!("Hello, wasm-hello-world! I closed a websocket");
     });
+}
+
+struct Model {}
+
+impl yew::Component for Model {
+    type Message = ();
+    type Properties = ();
+
+    fn create(_: Self::Properties, _: yew::ComponentLink<Self>) -> Self {
+        Self {}
+    }
+
+    fn update(&mut self, _: Self::Message) -> yew::ShouldRender {
+        false
+    }
+
+    fn change(&mut self, _: Self::Properties) -> yew::ShouldRender {
+        false
+    }
+
+    fn view(&self) -> yew::Html {
+        yew::html!{
+            <h1>{ "Hello World" }</h1>
+        }
+    }
 }
