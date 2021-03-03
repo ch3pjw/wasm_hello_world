@@ -22,13 +22,12 @@ extern {
 
 #[wasm_bindgen]
 pub fn main() {
-    let program = async {
+    spawn_local(async {
         let (mut ws, _wsio) = WsMeta::connect("wss://echo.websocket.org", None).await.expect_throw( "failed :-(");
         let mut evts = ws.observe(ObserveConfig::default()).await.expect_throw("observe died");
         ws.close().await;
         assert!(evts.next().await.unwrap_throw().is_closing());
         assert!(evts.next().await.unwrap_throw().is_closed());
         alert("Hello, wasm-hello-world! I closed a websocket");
-    };
-    spawn_local(program);
+    });
 }
