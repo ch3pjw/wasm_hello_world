@@ -38,14 +38,33 @@ extern {
 
 #[wasm_bindgen]
 pub fn main() {
+    utils::set_panic_hook();
     init_log();
     spawn_local(async {
         let (mut ws, _wsio) = WsMeta::connect("wss://echo.websocket.org", None).await.expect_throw( "failed :-(");
-        let mut evts = ws.observe(ObserveConfig::default()).await.expect_throw("observe died");
-        ws.close().await;
+        let mut events = ws.observe(ObserveConfig::default()).await.expect_throw("observe died");
+        match ws.close().await {
+            Ok(close_event) => info!("Logging closed here too {:?}", close_event),
+            Err(ws_err) => error!("Got an error: {:?}", ws_err)
+        }
 
-        while let Some(evt) = evts.next().await {
-            info!("Received event: {:?}", evt);
+        loop {
+            match events.next().await {
+                None => {
+                    error!("WebSocket closed unexpectedly!");
+                    break;
+                },
+                Some(WsEvent::Closed(close_event)) => {
+                    if close_event.was_clean {
+                        info!("WebSocket closed cleanly");
+                    } else {
+                        error!("WebSocket closed uncleanly: {}", close_event.reason);
+                    }
+                    break;
+                },
+                Some(WsEvent::WsErr(ws_err)) => error!("Received error: {:?}", ws_err),
+                Some(event) => info!("Received event: {:?}", event),
+            }
         }
         info!("Hello, wasm-hello-world! I closed a websocket");
     });
