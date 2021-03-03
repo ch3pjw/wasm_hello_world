@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Hello wasm-pack!</title>
+  </head>
+  <body>
+    <script type="module">
+        import("./pkg/wasm_hello_world.js")
+          .catch(e => console.error("Error importing:", e))
+          .then(async (module) => {
+             console.log("woot", module);
+             await module.default();
+             module.greet();
+          });
+    </script>
+  </body>
+</html>
