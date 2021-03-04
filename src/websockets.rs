@@ -1,44 +1,63 @@
 use {
     futures::{
         channel::mpsc,
-        Future,
+        stream::StreamExt,
     },
     js_sys,
     log::{error, info},
+    std::fmt::Debug,
     wasm_bindgen::{convert::FromWasmAbi, prelude::*, JsCast},
     web_sys::{ErrorEvent, MessageEvent, WebSocket},
 };
 
-pub fn go() -> Result<(WebSocket, mpsc::Receiver<WsMsg>), JsValue> {
-    let (mut rcv_tx, mut rcv_rx) = mpsc::channel(32);
+pub async fn go() -> Result<(WebSocket, mpsc::Receiver<WsMsg>), JsValue> {
+    let (rcv_tx, rcv_rx) = mpsc::channel(32);
     let ws = WebSocket::new("wss://echo.websocket.org")?;
     ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
 
-    let mut r = rcv_tx.clone();
+    let mut tx = rcv_tx.clone();
     set_callback(
         |cb| ws.set_onmessage(cb),
-        move |e: MessageEvent| send_mpsc(&mut r, WsMsg::Msg(())),
+        move |e: MessageEvent| {
+            info!("onmessage: {:?} {:?}", e, e.data());
+            if let Ok(msg) = e.data().dyn_into::<js_sys::JsString>() {
+                send_mpsc(&mut tx, WsMsg::Msg(msg.into()))
+            } else {
+                error!("error unpacking message!")
+            }
+        }
     );
 
-    let mut r = rcv_tx.clone();
+    let mut tx = rcv_tx.clone();
     set_callback(
         |cb| ws.set_onerror(cb),
-        move |e: ErrorEvent| send_mpsc(&mut r, WsMsg::Err(())),
+        move |e: ErrorEvent| {
+            error!("onerror: {:?}", e);
+            send_mpsc(&mut tx, WsMsg::Err(()))
+        }
     );
 
+    // TODO: This was supposed to be a futures::channel::oneshot, but it didn't type check with
+    // onshot::Sender.send() in the closure for unknown reasons:
+    let (mut connected_tx, mut connected_rx) = mpsc::channel(1);
     set_callback(
         |cb| ws.set_onopen(cb),
-        move |e: MessageEvent| {
+        // FIXME: `e` is blatently not a MessageEvent and will die horribly if I try to look at it
+        // as such, I expect:
+        move |e: JsValue| {
+            // FIXME: debug assert the ready state here
             info!("I have no idea what this event is... {:?}", e);
-            send_mpsc(&mut rcv_tx, WsMsg::Msg(()))
-        },
+            send_mpsc(&mut connected_tx, ())
+        }
     );
+    connected_rx.next().await;
+    connected_rx.close();
     Ok((ws, rcv_rx))
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum WsMsg {
-    Msg(()),
+    Msg(String),
     Err(()),
 }
 
@@ -58,8 +77,12 @@ where
 }
 
 fn send_mpsc<T>(sender: &mut mpsc::Sender<T>, value: T) {
-    match sender.try_send(value) {
-        Ok(()) => (),
-        Err(err) => error!("{:?}", err),
+    log_err((), sender.try_send(value))
+}
+
+fn log_err<T, E: Debug>(def: T, r: Result<T, E>) -> T {
+    match r {
+        Ok(v) => v,
+        Err(err) => { error!("{:?}", err); def }
     }
 }

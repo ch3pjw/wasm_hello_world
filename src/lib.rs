@@ -42,13 +42,13 @@ pub fn maine() {
     utils::set_panic_hook();
     init_log();
 
-    let (ws, mut rcv_q) = websockets::go().expect_throw("oops");
     spawn_local(async move {
+        let (ws, mut rcv_q) = websockets::go().await.expect_throw("oops");
         ws.send_with_str("hello world!");
         loop {
             match rcv_q.next().await {
                 None => error!("wat"),
-                Some(websockets::WsMsg::Msg(())) => info!("woot, msg"),
+                Some(websockets::WsMsg::Msg(msg)) => info!("woot, msg: {}", msg),
                 Some(websockets::WsMsg::Err(())) => error!("I died"),
             }
         }
