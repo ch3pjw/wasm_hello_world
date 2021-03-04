@@ -6,13 +6,16 @@ use {
     js_sys,
     log::{error, info},
     std::fmt::Debug,
+    thiserror::Error,
     wasm_bindgen::{convert::FromWasmAbi, prelude::*, JsCast},
     web_sys::{ErrorEvent, MessageEvent, WebSocket},
 };
 
-pub async fn go() -> Result<(WebSocket, mpsc::Receiver<WsMsg>), JsValue> {
+pub async fn go<'a>(url: &'a str) -> Result<(WebSocket, mpsc::Receiver<WsMsg>), WsError<'a>> {
     let (rcv_tx, rcv_rx) = mpsc::channel(32);
-    let ws = WebSocket::new("wss://echo.websocket.org")?;
+    let ws = WebSocket::new(url).map_err(
+        |e| WsError::ConnectionFailed{ url, err: e }
+    )?;
     ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
 
     let mut tx = rcv_tx.clone();
@@ -28,6 +31,9 @@ pub async fn go() -> Result<(WebSocket, mpsc::Receiver<WsMsg>), JsValue> {
         }
     );
 
+    // FIXME: The JS WebSockets API appears to send connection errors to this error handler, so we
+    // should set a handler like the onopen one, then switch to this one once our connection is
+    // established:
     let mut tx = rcv_tx.clone();
     set_callback(
         |cb| ws.set_onerror(cb),
@@ -59,6 +65,12 @@ pub async fn go() -> Result<(WebSocket, mpsc::Receiver<WsMsg>), JsValue> {
 pub enum WsMsg {
     Msg(String),
     Err(()),
+}
+
+#[derive(Debug, Error)]
+pub enum WsError<'a> {
+    #[error("Failed to {url} connect: {err:?}")]
+    ConnectionFailed{ url: &'a str, err: JsValue },
 }
 
 // Wraps up a lot of boilerplate closure wrappy stuff by adding even more confusing types! However,

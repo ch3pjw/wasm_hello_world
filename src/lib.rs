@@ -43,7 +43,7 @@ pub fn maine() {
     init_log();
 
     spawn_local(async move {
-        let (ws, mut rcv_q) = websockets::go().await.expect_throw("oops");
+        let (ws, mut rcv_q) = websockets::go("wss://echo.websocket.org").await.expect_throw("oops");
         ws.send_with_str("hello world!");
         loop {
             match rcv_q.next().await {
