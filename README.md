@@ -1,19 +1,11 @@
 # Building
 
 ```
-wasm-pack build --target web -- --features "logging"
+cargo make build
 ```
 
-
-# Test in Headless Browsers
-
-```
-wasm-pack test --headless --firefox
-```
-
-# Try out in browser
+# Run development server
 
 ```
-cargo install miniserve
-miniserve .
+cargo make serve
 ```

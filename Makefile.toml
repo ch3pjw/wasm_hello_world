@@ -1,0 +1,28 @@
+[tasks.serve]
+dependencies = ["install_miniserve", "build"]
+command = "miniserve"
+args = ["."]
+
+[tasks.build]
+dependencies = ["build_wasm"]
+
+[tasks.test]
+dependencies = ["install_wasm_pack"]
+command = "wasm-pack"
+args = ["test", "--headless", "--firefox"]
+
+[tasks.build_wasm]
+clear = true
+dependencies = ["install_wasm_pack"]
+command = "wasm-pack"
+args = ["build", "--target", "web", "--", "--features", "logging"]
+
+[tasks.install_wasm_pack]
+condition_script = ["test ! which wasm-pack"]
+command = "cargo"
+args = ["install", "wasm-pack"]
+
+[tasks.install_miniserve]
+condition_script = ["test ! which miniserve"]
+command = "cargo"
+args = ["install", "miniserve"]

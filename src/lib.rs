@@ -36,7 +36,7 @@ extern "C" {
 }
 
 #[wasm_bindgen(start)]
-pub fn main() {
+pub fn maine() {
     utils::set_panic_hook();
     init_log();
     yew::App::<Model>::new().mount_to_body();
