@@ -18,11 +18,12 @@ command = "wasm-pack"
 args = ["build", "--target", "web", "--", "--features", "logging"]
 
 [tasks.install_wasm_pack]
-condition_script = ["test ! which wasm-pack"]
-command = "cargo"
-args = ["install", "wasm-pack"]
+env = { "DEPENDENCY" = "wasm-pack" }
 
 [tasks.install_miniserve]
-condition_script = ["test ! which miniserve"]
+env = { "DEPENDENCY" = "miniserve" }
+
+[tasks.install_dependency]
+condition_script = ["test ! which ${DEPENDENCY}"]
 command = "cargo"
-args = ["install", "miniserve"]
+args = ["install", "${DEPENDENCY}"]
