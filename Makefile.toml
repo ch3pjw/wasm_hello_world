@@ -1,10 +1,14 @@
 [tasks.serve]
 dependencies = ["install_miniserve", "build"]
 command = "miniserve"
-args = ["."]
+args = ["static"]
 
 [tasks.build]
+clear = true
 dependencies = ["build_wasm"]
+script = [
+    "mv pkg/wasm_hello_world.js pkg/wasm_hello_world_bg.wasm static/"
+]
 
 [tasks.test]
 dependencies = ["install_wasm_pack"]
@@ -12,7 +16,6 @@ command = "wasm-pack"
 args = ["test", "--headless", "--firefox"]
 
 [tasks.build_wasm]
-clear = true
 dependencies = ["install_wasm_pack"]
 command = "wasm-pack"
 args = ["build", "--target", "web", "--", "--features", "logging"]
