@@ -83,7 +83,9 @@ struct UiProps {
     cmd_tx: mpsc::Sender<()>,
 }
 
-struct UiState {}
+struct UiState {
+    received_count: u32
+}
 
 enum UiMsg {
     SendHello,
@@ -95,7 +97,7 @@ impl yew::Component for UiModel {
     type Properties = UiProps;
 
     fn create(props: Self::Properties, link: yew::ComponentLink<Self>) -> Self {
-        Self { props, state: UiState{}, link }
+        Self { props, state: UiState{ received_count: 0 }, link }
     }
 
     fn update(&mut self, msg: Self::Message) -> yew::ShouldRender {
@@ -103,10 +105,14 @@ impl yew::Component for UiModel {
             UiMsg::SendHello => {
                 info!("SendHello UI event received, issuing send command...");
                 self.props.cmd_tx.try_send(());
+                false
             },
-            UiMsg::ReceivedMsg(msg) => info!("UI received a message! {}", msg)
+            UiMsg::ReceivedMsg(msg) => {
+                info!("UI received a message! {}", msg);
+                self.state.received_count += 1;
+                true
+            }
         }
-        false
     }
 
     fn change(&mut self, _: Self::Properties) -> yew::ShouldRender {
@@ -116,7 +122,7 @@ impl yew::Component for UiModel {
     fn view(&self) -> yew::Html {
         yew::html! {
             <div>
-              <h1>{ "Hello World" }</h1>
+              <h1>{ format!("Hello World: {}", self.state.received_count) }</h1>
               <button onclick=self.link.callback(|_| UiMsg::SendHello)>{ "Send Hello World!" }</button>
             </div>
         }
