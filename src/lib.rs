@@ -43,17 +43,6 @@ pub fn maine() {
 
     spawn_local(async {
         let (ws, mut msg_rx) = websockets::go("wss://echo.websocket.org").await.expect_throw("oops");
-        spawn_local(async move {
-            loop {
-                match msg_rx.next().await {
-                    None => error!("wat"),
-                    Some(websockets::WsMsg::Msg(msg)) => info!("woot, msg: {}", msg),
-                    Some(websockets::WsMsg::Err(())) => error!("I died"),
-                }
-            }
-
-        });
-
         let (cmd_tx, mut cmd_rx) = mpsc::channel(32);
         spawn_local(async move {
             loop {
@@ -67,7 +56,18 @@ pub fn maine() {
             }
         });
 
-        yew::App::<UiModel>::new().mount_to_body_with_props(UiProps{ cmd_tx });
+        let ui = yew::App::<UiModel>::new().mount_to_body_with_props(UiProps{ cmd_tx });
+        spawn_local(async move {
+            loop {
+                match msg_rx.next().await {
+                    None => error!("wat"),
+                    Some(websockets::WsMsg::Msg(msg)) => ui.send_message(UiMsg::ReceivedMsg(msg)),
+                    Some(websockets::WsMsg::Err(())) => error!("I died"),
+                }
+            }
+
+        });
+
     });
     info!("hello again");
 }
@@ -80,13 +80,14 @@ struct UiModel {
 
 #[derive(Clone, yew::Properties)]
 struct UiProps {
-    cmd_tx: mpsc::Sender<()>
+    cmd_tx: mpsc::Sender<()>,
 }
 
 struct UiState {}
 
 enum UiMsg {
-    SendHello
+    SendHello,
+    ReceivedMsg(String),
 }
 
 impl yew::Component for UiModel {
@@ -99,10 +100,11 @@ impl yew::Component for UiModel {
 
     fn update(&mut self, msg: Self::Message) -> yew::ShouldRender {
         match msg {
-            SendHello => {
+            UiMsg::SendHello => {
                 info!("SendHello UI event received, issuing send command...");
                 self.props.cmd_tx.try_send(());
-            }
+            },
+            UiMsg::ReceivedMsg(msg) => info!("UI received a message! {}", msg)
         }
         false
     }
