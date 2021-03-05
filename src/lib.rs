@@ -2,7 +2,7 @@ extern crate cfg_if;
 
 use {
     cfg_if::cfg_if,
-    futures::{stream::StreamExt, SinkExt},
+    futures::{stream::StreamExt, SinkExt, channel::mpsc},
     log::{error, info},
     pharos::*,
     wasm_bindgen::prelude::*,
@@ -41,20 +41,36 @@ extern "C" {
 pub fn maine() {
     utils::set_panic_hook();
     init_log();
+    yew::initialize();
 
-    spawn_local(async move {
-        let (ws, mut rcv_q) = websockets::go("wss://echo.websocket.org").await.expect_throw("oops");
-        ws.send_with_str("hello world!");
-        loop {
-            match rcv_q.next().await {
-                None => error!("wat"),
-                Some(websockets::WsMsg::Msg(msg)) => info!("woot, msg: {}", msg),
-                Some(websockets::WsMsg::Err(())) => error!("I died"),
+    spawn_local(async {
+        let (ws, mut msg_rx) = websockets::go("wss://echo.websocket.org").await.expect_throw("oops");
+        spawn_local(async move {
+            loop {
+                match msg_rx.next().await {
+                    None => error!("wat"),
+                    Some(websockets::WsMsg::Msg(msg)) => info!("woot, msg: {}", msg),
+                    Some(websockets::WsMsg::Err(())) => error!("I died"),
+                }
             }
-        }
-    });
 
-    yew::App::<Model>::new().mount_to_body();
+        });
+
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(32);
+        spawn_local(async move {
+            loop {
+                match cmd_rx.next().await {
+                    None => error!("oh noes"),
+                    Some(()) => {
+                        info!("Send command received, sending message...");
+                        ws.send_with_str("hello world!");
+                    }
+                }
+            }
+        });
+
+        yew::App::<UiModel>::new().mount_to_body_with_props(UiProps{ cmd_tx });
+    });
     // spawn_local(async {
         // let (mut ws, mut stream) = match WsMeta::connect("wss://echo.websocket.org", None).await {
             // Ok(x) => x,
@@ -104,17 +120,38 @@ pub fn maine() {
     info!("hello again");
 }
 
-struct Model {}
+struct UiModel {
+    props: UiProps,
+    state: UiState,
+    link: yew::ComponentLink<Self>
+}
 
-impl yew::Component for Model {
-    type Message = ();
-    type Properties = ();
+#[derive(Clone, yew::Properties)]
+struct UiProps {
+    cmd_tx: mpsc::Sender<()>
+}
 
-    fn create(_: Self::Properties, _: yew::ComponentLink<Self>) -> Self {
-        Self {}
+struct UiState {}
+
+enum UiMsg {
+    SendHello
+}
+
+impl yew::Component for UiModel {
+    type Message = UiMsg;
+    type Properties = UiProps;
+
+    fn create(props: Self::Properties, link: yew::ComponentLink<Self>) -> Self {
+        Self { props, state: UiState{}, link }
     }
 
-    fn update(&mut self, _: Self::Message) -> yew::ShouldRender {
+    fn update(&mut self, msg: Self::Message) -> yew::ShouldRender {
+        match msg {
+            SendHello => {
+                info!("SendHello UI event received, issuing send command...");
+                self.props.cmd_tx.try_send(());
+            }
+        }
         false
     }
 
@@ -124,7 +161,10 @@ impl yew::Component for Model {
 
     fn view(&self) -> yew::Html {
         yew::html! {
-            <h1>{ "Hello World" }</h1>
+            <div>
+              <h1>{ "Hello World" }</h1>
+              <button onclick=self.link.callback(|_| UiMsg::SendHello)>{ "Send Hello World!" }</button>
+            </div>
         }
     }
 }
