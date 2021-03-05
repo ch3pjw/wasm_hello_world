@@ -1,14 +1,11 @@
 extern crate cfg_if;
-mod utils;
 
 use {
     cfg_if::cfg_if,
-    futures::{stream::StreamExt, SinkExt},
+    futures::{stream::StreamExt, channel::mpsc},
     log::{error, info},
-    pharos::*,
     wasm_bindgen::prelude::*,
     wasm_bindgen_futures::spawn_local,
-    ws_stream_wasm::*,
 };
 
 cfg_if! {
@@ -23,6 +20,9 @@ cfg_if! {
         fn init_log() {}
     }
 }
+
+mod utils;
+mod websockets;
 
 // When the `wee_alloc` feature is enabled, use `wee_alloc` as the global
 // allocator.
@@ -39,67 +39,80 @@ extern "C" {
 pub fn maine() {
     utils::set_panic_hook();
     init_log();
-    yew::App::<Model>::new().mount_to_body();
-    spawn_local(async {
-        let (mut ws, mut stream) = match WsMeta::connect("wss://echo.websocket.org", None).await {
-            Ok(x) => x,
-            Err(ws_err) => {
-                error!("Error opening WebSocket {:?}", ws_err);
-                return;
-            }
-        };
+    yew::initialize();
 
-        let mut events = ws
-            .observe(ObserveConfig::default())
-            .await
-            .expect_throw("observe died");
+    spawn_local(async {
+        let (ws, mut msg_rx) = websockets::go("wss://echo.websocket.org").await.expect_throw("oops");
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(32);
         spawn_local(async move {
             loop {
-                match events.next().await {
-                    None => {
-                        error!("WebSocket closed unexpectedly!");
-                        break;
+                match cmd_rx.next().await {
+                    None => error!("oh noes"),
+                    Some(()) => {
+                        info!("Send command received, sending message...");
+                        ws.send_with_str("hello world!");
                     }
-                    Some(WsEvent::Closed(close_event)) => {
-                        if close_event.was_clean {
-                            info!("WebSocket closed cleanly");
-                        } else {
-                            error!("WebSocket closed uncleanly: {}", close_event.reason);
-                        }
-                        break;
-                    }
-                    Some(WsEvent::WsErr(ws_err)) => error!("Received error: {:?}", ws_err),
-                    Some(event) => info!("Received event: {:?}", event),
                 }
             }
         });
 
-        stream
-            .send(WsMessage::Text("Hello World!".to_string()))
-            .await
-            .expect_throw("sending failed");
-        info!("blah {:?}", stream.next().await);
+        let ui = yew::App::<UiModel>::new().mount_to_body_with_props(UiProps{ cmd_tx });
+        spawn_local(async move {
+            loop {
+                match msg_rx.next().await {
+                    None => error!("wat"),
+                    Some(websockets::WsMsg::Msg(msg)) => ui.send_message(UiMsg::ReceivedMsg(msg)),
+                    Some(websockets::WsMsg::Err(())) => error!("I died"),
+                }
+            }
 
-        match ws.close().await {
-            Ok(close_event) => info!("Logging closed here too {:?}", close_event),
-            Err(ws_err) => error!("Got an error: {:?}", ws_err),
-        }
-        info!("Hello, wasm-hello-world! I closed a websocket");
+        });
+
     });
+    info!("hello again");
 }
 
-struct Model {}
+struct UiModel {
+    props: UiProps,
+    state: UiState,
+    link: yew::ComponentLink<Self>
+}
 
-impl yew::Component for Model {
-    type Message = ();
-    type Properties = ();
+#[derive(Clone, yew::Properties)]
+struct UiProps {
+    cmd_tx: mpsc::Sender<()>,
+}
 
-    fn create(_: Self::Properties, _: yew::ComponentLink<Self>) -> Self {
-        Self {}
+struct UiState {
+    received_count: u32
+}
+
+enum UiMsg {
+    SendHello,
+    ReceivedMsg(String),
+}
+
+impl yew::Component for UiModel {
+    type Message = UiMsg;
+    type Properties = UiProps;
+
+    fn create(props: Self::Properties, link: yew::ComponentLink<Self>) -> Self {
+        Self { props, state: UiState{ received_count: 0 }, link }
     }
 
-    fn update(&mut self, _: Self::Message) -> yew::ShouldRender {
-        false
+    fn update(&mut self, msg: Self::Message) -> yew::ShouldRender {
+        match msg {
+            UiMsg::SendHello => {
+                info!("SendHello UI event received, issuing send command...");
+                self.props.cmd_tx.try_send(());
+                false
+            },
+            UiMsg::ReceivedMsg(msg) => {
+                info!("UI received a message! {}", msg);
+                self.state.received_count += 1;
+                true
+            }
+        }
     }
 
     fn change(&mut self, _: Self::Properties) -> yew::ShouldRender {
@@ -108,7 +121,10 @@ impl yew::Component for Model {
 
     fn view(&self) -> yew::Html {
         yew::html! {
-            <h1>{ "Hello World" }</h1>
+            <div>
+              <h1>{ format!("Hello World: {}", self.state.received_count) }</h1>
+              <button onclick=self.link.callback(|_| UiMsg::SendHello)>{ "Send Hello World!" }</button>
+            </div>
         }
     }
 }
