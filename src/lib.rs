@@ -122,9 +122,44 @@ impl yew::Component for UiModel {
     fn view(&self) -> yew::Html {
         yew::html! {
             <div>
-              <h1>{ format!("Hello World: {}", self.state.received_count) }</h1>
+              <h1>{ "Hello World: " }<Counter n=self.state.received_count/></h1>
               <button onclick=self.link.callback(|_| UiMsg::SendHello)>{ "Send Hello World!" }</button>
             </div>
+        }
+    }
+}
+
+#[repr(transparent)]
+#[derive(Clone, PartialEq, yew::Properties)]
+struct U32Prop { n: u32 }
+
+#[repr(transparent)]
+struct Counter { props: U32Prop }
+
+impl yew::Component for Counter {
+    type Message = ();
+    type Properties = U32Prop;
+
+    fn create(props: Self::Properties, _: yew::ComponentLink<Self>) -> Self {
+        Counter { props }
+    }
+
+    fn update(&mut self, _: Self::Message) -> yew::ShouldRender {
+        false
+    }
+
+    fn change(&mut self, props: Self::Properties) -> yew::ShouldRender {
+        if props != self.props {
+            self.props = props;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn view(&self) -> yew::Html {
+        yew::html! {
+            { self.props.n }
         }
     }
 }
