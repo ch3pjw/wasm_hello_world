@@ -1,32 +1,5 @@
-[tasks.serve]
-dependencies = ["install_miniserve", "build"]
-command = "miniserve"
-args = ["static"]
-
 [tasks.build]
 clear = true
-dependencies = ["build_wasm"]
-script = [
-    "mv pkg/wasm_hello_world.js pkg/wasm_hello_world_bg.wasm static/"
+dependencies = [
+    { name = "build", path = "client" }
 ]
-
-[tasks.test]
-dependencies = ["install_wasm_pack"]
-command = "wasm-pack"
-args = ["test", "--headless", "--firefox"]
-
-[tasks.build_wasm]
-dependencies = ["install_wasm_pack"]
-command = "wasm-pack"
-args = ["build", "--target", "web", "--", "--features", "logging"]
-
-[tasks.install_wasm_pack]
-env = { "DEPENDENCY" = "wasm-pack" }
-
-[tasks.install_miniserve]
-env = { "DEPENDENCY" = "miniserve" }
-
-[tasks.install_dependency]
-condition_script = ["test ! which ${DEPENDENCY}"]
-command = "cargo"
-args = ["install", "${DEPENDENCY}"]
