@@ -43,14 +43,14 @@ pub fn maine() {
 
     spawn_local(async {
         let (ws, mut msg_rx) = websockets::go("wss://echo.websocket.org").await.expect_throw("oops");
-        let (cmd_tx, mut cmd_rx) = mpsc::channel(32);
+        let (cmd_tx, mut cmd_rx) = mpsc::channel::<String>(32);
         spawn_local(async move {
             loop {
                 match cmd_rx.next().await {
                     None => error!("oh noes"),
-                    Some(()) => {
+                    Some(txt) => {
                         info!("Send command received, sending message...");
-                        ws.send_with_str("hello world!");
+                        ws.send_with_str(&txt);
                     }
                 }
             }
@@ -75,12 +75,11 @@ pub fn maine() {
 struct UiModel {
     props: UiProps,
     state: UiState,
-    link: yew::ComponentLink<Self>
 }
 
 #[derive(Clone, yew::Properties)]
 struct UiProps {
-    cmd_tx: mpsc::Sender<()>,
+    cmd_tx: mpsc::Sender<String>,
 }
 
 struct UiState {
@@ -88,7 +87,6 @@ struct UiState {
 }
 
 enum UiMsg {
-    SendHello,
     ReceivedMsg(String),
 }
 
@@ -96,17 +94,12 @@ impl yew::Component for UiModel {
     type Message = UiMsg;
     type Properties = UiProps;
 
-    fn create(props: Self::Properties, link: yew::ComponentLink<Self>) -> Self {
-        Self { props, state: UiState{ received_count: 0 }, link }
+    fn create(props: Self::Properties, _: yew::ComponentLink<Self>) -> Self {
+        Self { props, state: UiState{ received_count: 0 } }
     }
 
     fn update(&mut self, msg: Self::Message) -> yew::ShouldRender {
         match msg {
-            UiMsg::SendHello => {
-                info!("SendHello UI event received, issuing send command...");
-                self.props.cmd_tx.try_send(());
-                false
-            },
             UiMsg::ReceivedMsg(msg) => {
                 info!("UI received a message! {}", msg);
                 self.state.received_count += 1;
@@ -123,7 +116,7 @@ impl yew::Component for UiModel {
         yew::html! {
             <div>
               <h1>{ "Hello World: " }<Counter n=self.state.received_count/></h1>
-              <button onclick=self.link.callback(|_| UiMsg::SendHello)>{ "Send Hello World!" }</button>
+              <Transmitter default_msg="Hello World!" cmd_tx=self.props.cmd_tx.clone()/>
             </div>
         }
     }
@@ -160,6 +153,75 @@ impl yew::Component for Counter {
     fn view(&self) -> yew::Html {
         yew::html! {
             { self.props.n }
+        }
+    }
+}
+
+
+struct Transmitter {
+    props: TransmitterProps,
+    link: yew::ComponentLink<Self>,
+    current_msg: Option<String>,
+}
+
+#[derive(Clone, yew::Properties)]
+struct TransmitterProps {
+    default_msg: String,
+    cmd_tx: mpsc::Sender<String>,
+}
+
+#[derive(Debug)]
+enum TransmitterMsg {
+    SendMsg,
+    Input(String),
+}
+
+impl Transmitter {
+    fn msg(&self, current_msg: &Option<String>) -> String {
+        current_msg.as_ref().unwrap_or(&self.props.default_msg).clone()
+    }
+}
+
+impl yew::Component for Transmitter {
+    type Message = TransmitterMsg;
+    type Properties = TransmitterProps;
+
+    fn create(props: Self::Properties, link: yew::ComponentLink<Self>) -> Self {
+        Transmitter { props, link, current_msg: None }
+    }
+
+    fn change(&mut self, props: Self::Properties) -> yew::ShouldRender {
+        self.props.default_msg = props.default_msg;
+        false
+    }
+
+    fn update(&mut self, msg: Self::Message) -> yew::ShouldRender {
+        match msg {
+            TransmitterMsg::Input(txt) => {
+                self.current_msg = if txt == "" { None } else { Some(txt) };
+            },
+            TransmitterMsg::SendMsg => {
+                let current_msg = self.current_msg.take();
+                self.props.cmd_tx.try_send(self.msg(&current_msg));
+            }
+        }
+        true
+    }
+
+    fn view(&self) -> yew::Html {
+        yew::html! {
+            <div>
+                <input
+                    value=self.current_msg.as_ref().unwrap_or(&"".to_string())
+                    oninput=self.link.callback(|evt: yew::InputData| TransmitterMsg::Input(evt.value))
+                    onkeypress=self.link.batch_callback(| evt: yew::events::KeyboardEvent| {
+                        if evt.key() == "Enter" { vec![TransmitterMsg::SendMsg] } else { vec![] }
+                    })
+                />
+                <button onclick=self.link.callback(|_| TransmitterMsg::SendMsg )>
+                    { format!("Send {:?}", self.msg(&self.current_msg)) }
+                </button>
+            </div>
         }
     }
 }
