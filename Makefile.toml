@@ -1,5 +1,5 @@
 [tasks.build]
 clear = true
 dependencies = [
-    { name = "build", path = "client" }
+    { name = "build", path = "server" }
 ]
