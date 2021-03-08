@@ -1,0 +1,19 @@
+[tasks.build]
+clear = true
+dependencies = ["build_wasm"]
+script = [
+    "mv pkg/wasm_hello_world.js pkg/wasm_hello_world_bg.wasm static/"
+]
+
+[tasks.test]
+dependencies = ["install_wasm_pack"]
+command = "wasm-pack"
+args = ["test", "--headless", "--firefox"]
+
+[tasks.build_wasm]
+dependencies = ["install_wasm_pack"]
+command = "wasm-pack"
+args = ["build", "--target", "web", "--", "--features", "logging"]
+
+[tasks.install_wasm_pack]
+install_crate = { crate_name = "wasm-pack", binary = "wasm-pack", test_arg = "--version" }
