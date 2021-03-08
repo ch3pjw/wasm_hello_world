@@ -33,6 +33,21 @@ const CLIENT_JS: &[u8]  = include_bytes!("../../client/static/wasm_hello_world.j
 const CLIENT_WASM: &[u8] = include_bytes!("../../client/static/wasm_hello_world_bg.wasm");
 
 async fn handle_request(req: Request<Body>) -> Result<Response<Body>, http::Error> {
+    if req.method() != http::Method::GET {
+        return err_resp(StatusCode::METHOD_NOT_ALLOWED);
+    }
+    if let Some(scheme) = req.uri().scheme() {
+        match scheme.as_str() {
+            "http" | "https" => handle_get(req),
+            "ws" | "wss" => handle_ws(req).await,
+            _ => err_resp(StatusCode::NOT_FOUND)
+        }
+    } else {
+        err_resp(StatusCode::NOT_FOUND)
+    }
+}
+
+fn handle_get(req: Request<Body>) -> Result<Response<Body>, http::Error> {
     let b = Response::builder();
     let x = match req.uri().path() {
         "/" | "/index.html" => Some(("text/html", CLIENT_HTML)),
@@ -46,4 +61,13 @@ async fn handle_request(req: Request<Body>) -> Result<Response<Body>, http::Erro
             .header(header::CONTENT_TYPE, content_type)
             .body(Body::from(bytes)),
     }
+}
+
+async fn handle_ws(req: Request<Body>) -> Result<Response<Body>, http::Error> {
+    todo!()
+}
+
+
+fn err_resp(code: StatusCode) -> Result<Response<Body>, http::Error> {
+    Response::builder().status(code).body(Body::empty())
 }
