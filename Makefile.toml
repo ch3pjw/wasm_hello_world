@@ -3,3 +3,9 @@ clear = true
 dependencies = [
     { name = "build", path = "server" }
 ]
+
+[tasks.run]
+clear = true
+dependencies = [
+	{ name = "run", path = "server" }
+]
