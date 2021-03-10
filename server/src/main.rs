@@ -1,4 +1,5 @@
 use {
+    futures::Stream,
     hyper::{
         Body,
         Request,
@@ -9,10 +10,16 @@ use {
         http,
         service::{make_service_fn, service_fn},
     },
+    pin_project::pin_project,
     std::{
         convert::Infallible,
+        io,
         net::SocketAddr,
-    }
+        pin::Pin,
+        task::{Context, Poll},
+    },
+    tokio::io::{AsyncRead, AsyncWrite, ReadBuf},
+    websocket::server::upgrade::r#async::IntoWs
 };
 
 #[tokio::main]
@@ -28,8 +35,8 @@ async fn main() {
 }
 
 
-const CLIENT_HTML: &[u8]  = include_bytes!("../../client/static/index.html");
-const CLIENT_JS: &[u8]  = include_bytes!("../../client/static/wasm_hello_world.js");
+const CLIENT_HTML: &[u8] = include_bytes!("../../client/static/index.html");
+const CLIENT_JS: &[u8] = include_bytes!("../../client/static/wasm_hello_world.js");
 const CLIENT_WASM: &[u8] = include_bytes!("../../client/static/wasm_hello_world_bg.wasm");
 
 async fn handle_request(req: Request<Body>) -> Result<Response<Body>, http::Error> {
@@ -64,6 +71,7 @@ fn handle_get(req: Request<Body>) -> Result<Response<Body>, http::Error> {
 }
 
 async fn handle_ws(req: Request<Body>) -> Result<Response<Body>, http::Error> {
+    // WsRequest(req).into_ws();
     todo!()
 }
 
@@ -71,3 +79,54 @@ async fn handle_ws(req: Request<Body>) -> Result<Response<Body>, http::Error> {
 fn err_resp(code: StatusCode) -> Result<Response<Body>, http::Error> {
     Response::builder().status(code).body(Body::empty())
 }
+
+
+#[repr(transparent)]
+// This pin-projection black magic is required so that trait lookups work when we delegate to our
+// wrapped type:
+#[pin_project(project = EnumProj)]
+struct MyBody(
+    #[pin]
+    Body
+);
+
+impl AsyncRead for MyBody {
+    fn poll_read(self: Pin<&mut Self>, ctx: &mut Context, buf: &mut ReadBuf) -> Poll<Result<(), io::Error>> {
+        let this = self.project();
+        this.0.poll_next(ctx).map(|opt| match opt {
+            None => Err(io::Error::new(io::ErrorKind::Other, "poll_next => None")),
+            Some(result) => match result {
+                Err(err) => Err(io::Error::new(io::ErrorKind::Other, format!("{:?}", err))),
+                Ok(bytes) => {
+                    buf.put_slice(&bytes);
+                    Ok(())
+                }
+            }
+        })
+    }
+}
+
+impl AsyncWrite for MyBody {
+    fn poll_write(self: Pin<&mut Self>, ctx: &mut Context, bytes: &[u8]) -> Poll<Result<usize, io::Error>> {
+        todo!()
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, ctx: &mut Context) -> Poll<Result<(), io::Error>> {
+        todo!()
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, ctx: &mut Context) -> Poll<Result<(), io::Error>> {
+        todo!()
+    }
+}
+
+// struct WsRequest(Request<Body>);
+
+// impl IntoWs for WsRequest {
+    // type Stream = Body;
+    // type Error = u32;
+
+    // fn into_ws(self) -> Box<()> {
+        // todo!()
+    // }
+// }
