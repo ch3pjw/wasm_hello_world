@@ -42,7 +42,9 @@ pub fn maine() {
     yew::initialize();
 
     spawn_local(async {
-        let (ws, mut msg_rx) = websockets::go("wss://echo.websocket.org").await.expect_throw("oops");
+        // TODO: We need to parameterise `maine` somehow so that the server can populate this link
+        // for the client to talk back to it:
+        let (ws, mut msg_rx) = websockets::go("ws://127.0.0.1:8080/").await.expect_throw("oops");
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<String>(32);
         spawn_local(async move {
             loop {

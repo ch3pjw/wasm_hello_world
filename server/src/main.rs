@@ -1,5 +1,4 @@
 use {
-    futures::Stream,
     hyper::{
         Body,
         Request,
@@ -10,20 +9,18 @@ use {
         http,
         service::{make_service_fn, service_fn},
     },
-    pin_project::pin_project,
+    log::{info, error, warn},
+    simple_logger::SimpleLogger,
     std::{
         convert::Infallible,
-        io,
         net::SocketAddr,
-        pin::Pin,
-        task::{Context, Poll},
+        str,
     },
-    tokio::io::{AsyncRead, AsyncWrite, ReadBuf},
-    websocket::server::upgrade::r#async::IntoWs
 };
 
 #[tokio::main]
 async fn main() {
+    SimpleLogger::new().init().unwrap();
     let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
 
     let mk_svc = make_service_fn(|_conn| async {
@@ -31,6 +28,7 @@ async fn main() {
     });
 
     let server = Server::bind(&addr).serve(mk_svc);
+    info!("Visit http://127.0.0.1:8080/index.html to start");
     server.await;
 }
 
@@ -43,14 +41,12 @@ async fn handle_request(req: Request<Body>) -> Result<Response<Body>, http::Erro
     if req.method() != http::Method::GET {
         return err_resp(StatusCode::METHOD_NOT_ALLOWED);
     }
-    if let Some(scheme) = req.uri().scheme() {
-        match scheme.as_str() {
-            "http" | "https" => handle_get(req),
-            "ws" | "wss" => handle_ws(req).await,
-            _ => err_resp(StatusCode::NOT_FOUND)
-        }
+    // TODO: The URI scheme doesn't seem to get supplied, so we can't use that to switch handler
+    // :-(
+    if req.headers().contains_key(header::UPGRADE) {
+        handle_ws(req)
     } else {
-        err_resp(StatusCode::NOT_FOUND)
+        handle_get(req)
     }
 }
 
@@ -60,7 +56,10 @@ fn handle_get(req: Request<Body>) -> Result<Response<Body>, http::Error> {
         "/" | "/index.html" => Some(("text/html", CLIENT_HTML)),
         "/wasm_hello_world.js" => Some(("application/javascript", CLIENT_JS)),
         "/wasm_hello_world_bg.wasm" => Some(("application/wasm", CLIENT_WASM)),
-        _ => None
+        path => {
+            warn!("Requested missing path: {}", path);
+            None
+        }
     };
     match x {
         None => b.status(StatusCode::NOT_FOUND).body(Body::empty()),
@@ -70,63 +69,37 @@ fn handle_get(req: Request<Body>) -> Result<Response<Body>, http::Error> {
     }
 }
 
-async fn handle_ws(req: Request<Body>) -> Result<Response<Body>, http::Error> {
-    // WsRequest(req).into_ws();
-    todo!()
-}
-
 
 fn err_resp(code: StatusCode) -> Result<Response<Body>, http::Error> {
     Response::builder().status(code).body(Body::empty())
 }
 
-
-#[repr(transparent)]
-// This pin-projection black magic is required so that trait lookups work when we delegate to our
-// wrapped type:
-#[pin_project(project = EnumProj)]
-struct MyBody(
-    #[pin]
-    Body
-);
-
-impl AsyncRead for MyBody {
-    fn poll_read(self: Pin<&mut Self>, ctx: &mut Context, buf: &mut ReadBuf) -> Poll<Result<(), io::Error>> {
-        let this = self.project();
-        this.0.poll_next(ctx).map(|opt| match opt {
-            None => Err(io::Error::new(io::ErrorKind::Other, "poll_next => None")),
-            Some(result) => match result {
-                Err(err) => Err(io::Error::new(io::ErrorKind::Other, format!("{:?}", err))),
-                Ok(bytes) => {
-                    buf.put_slice(&bytes);
-                    Ok(())
+fn handle_ws(mut req: Request<Body>) -> Result<Response<Body>, http::Error> {
+    if req.uri().path() != "/" {
+        error!("Bad websocket path: {}", req.uri().path());
+        return err_resp(StatusCode::NOT_FOUND);
+    }
+    tokio::task::spawn(async move {
+        match hyper::upgrade::on(&mut req).await {
+            Ok(upgraded) => {
+                if let Err(e) = websocket_dialogue(upgraded).await {
+                    error!("server websocket IO error: {}", e)
                 }
-            }
-        })
-    }
+            },
+            Err(e) => error!("upgrade error: {}", e)
+        }
+    });
+    Response::builder()
+        .status(StatusCode::SWITCHING_PROTOCOLS)
+        .header(header::UPGRADE, header::HeaderValue::from_static("blah"))
+        .body(Body::empty())
 }
 
-impl AsyncWrite for MyBody {
-    fn poll_write(self: Pin<&mut Self>, ctx: &mut Context, bytes: &[u8]) -> Poll<Result<usize, io::Error>> {
-        todo!()
-    }
 
-    fn poll_flush(self: Pin<&mut Self>, ctx: &mut Context) -> Poll<Result<(), io::Error>> {
-        todo!()
-    }
-
-    fn poll_shutdown(self: Pin<&mut Self>, ctx: &mut Context) -> Poll<Result<(), io::Error>> {
-        todo!()
+async fn websocket_dialogue(mut upgraded: hyper::upgrade::Upgraded) -> Result<(), hyper::Error> {
+    let mut buf = [0u8; 6];
+    loop {
+        upgraded.read_exact(&mut buf).await?;
+        info!("Server received {:?}", str::from_utf8(&buf));
     }
 }
-
-// struct WsRequest(Request<Body>);
-
-// impl IntoWs for WsRequest {
-    // type Stream = Body;
-    // type Error = u32;
-
-    // fn into_ws(self) -> Box<()> {
-        // todo!()
-    // }
-// }
