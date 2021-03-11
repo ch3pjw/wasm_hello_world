@@ -16,11 +16,14 @@ use {
     log::{info, error, warn},
     simple_logger::SimpleLogger,
     std::{
+        str,
         convert::Infallible,
         net::SocketAddr,
     },
     tokio::io::AsyncReadExt
 };
+
+mod websocket;
 
 #[tokio::main]
 async fn main() {
@@ -135,7 +138,9 @@ async fn websocket_dialogue(mut upgraded: hyper::upgrade::Upgraded) -> Result<()
                 todo!("translate e into hyper::Error or change our error type everywhere")
             }
         };
-        info!("Server received {:?}", &buf[0..bytes_read]);
+        let (_, frame) = websocket::Frame::parse(&buf[0..bytes_read])
+            .expect("failed to parse data frame");
+        info!("Server received {:?}", str::from_utf8(&frame.payload()));
     }
 }
 

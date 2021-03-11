@@ -8,8 +8,10 @@ edition = "2018"
 
 [dependencies]
 base64 = "0.13"
+enum_primitive = "0.1"
 hyper = { version = "0.14", features = ["full"] }
 log = "0.4"
+nom = "6.1"
 rust-crypto = "0.2"
 simple_logger = "1.11"
 tokio = { version = "1.2", features = ["macros", "rt-multi-thread"] }
