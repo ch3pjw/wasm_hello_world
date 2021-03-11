@@ -123,8 +123,8 @@ fn hv(string: &'static str) -> header::HeaderValue {
 
 
 async fn websocket_dialogue(mut upgraded: hyper::upgrade::Upgraded) -> Result<(), hyper::Error> {
+    let mut buf = [0u8; 1024];
     loop {
-        let mut buf = [0u8; 1024];
         let bytes_read = match upgraded.read(&mut buf).await {
             Ok(bytes_read) => {
                 if bytes_read == 0 /* EOF */ { return Ok(()) };
