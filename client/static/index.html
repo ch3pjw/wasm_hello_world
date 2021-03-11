@@ -6,8 +6,15 @@
   </head>
   <body>
     <script type="module">
-        import go from "./wasm_hello_world.js";
-        go();
+        import { default as init, main } from "./wasm_hello_world.js";
+        init()
+            .then(_ => {
+                // main("wss://echo.websocket.org");
+                main("ws://127.0.0.1:8080/");
+            })
+            .catch(err => {
+                console.log(err);
+            });
     </script>
   </body>
 </html>
