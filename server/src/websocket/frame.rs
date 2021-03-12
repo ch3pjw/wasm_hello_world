@@ -5,15 +5,11 @@ use {
         bits,
         bits::streaming::take as take_bits,
         bytes::streaming::take as take_bytes,
-        combinator::{ParserIterator, eof, map, map_opt},
-        number::{
-            Endianness,
-            streaming::{be_u16, be_u32, be_u64, u32},
-        }
+        combinator::{eof, map, map_opt},
+        number::streaming::{be_u16, be_u32, be_u64},
     },
     std::{
         convert::TryInto,
-        iter::FromIterator,
         mem::size_of,
     },
 };
