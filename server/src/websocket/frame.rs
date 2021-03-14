@@ -8,6 +8,7 @@ use {
         bytes::streaming::take as take_bytes,
         combinator::{eof, map, map_opt},
         number::streaming::{be_u16, be_u32, be_u64},
+        sequence::tuple,
     },
     std::{
         convert::TryInto,
@@ -74,15 +75,9 @@ fn parse_frame(input: &[u8]) -> IResult<&[u8], Frame> {
 }
 
 fn parse_frame_head(input: BitStream) -> IResult<BitStream, (bool, Op, bool, u8)> {
-    let (mut input, fin) = flag_p().parse(input)?;
-    for _ in 0..3 {
-        let (i, reserved_flag) = flag_p().parse(input)?;
-        input = i;
-        assert!(!reserved_flag)
-    }
-    let (input, op) = op_code_p().parse(input)?;
-    let (input, masked) = flag_p().parse(input)?;
-    let (input, payload_len) = payload_len_p().parse(input)?;
+    let (input, fin) = flag_p().parse(input)?;
+    let (input, _) = count_unit(3, flag_p().map(|res_flag| assert!(!res_flag))).parse(input)?;
+    let (input, (op, masked, payload_len)) = tuple((op_code_p(), flag_p(), payload_len_p())).parse(input)?;
     Ok((input, (fin, op, masked, payload_len)))
 }
 
@@ -108,6 +103,16 @@ fn op_code_p<'a>() -> impl BitParser<'a, Op> {
 
 fn payload_len_p<'a>() -> impl BitParser<'a, u8> {
     take_bits(7usize)
+}
+
+fn count_unit<I, O, E, P: Parser<I, O, E>>(n: usize, mut parser: P) -> impl Parser<I, (), E> {
+    move |mut input| {
+        for _ in 0..n {
+            let (remaining, _) = parser.parse(input)?;
+            input = remaining
+        }
+        Ok((input, ()))
+    }
 }
 
 type BitStream<'a> = (&'a [u8], usize);
