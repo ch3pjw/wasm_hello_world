@@ -2,6 +2,7 @@ use {
     enum_primitive::*,
     nom::{
         IResult,
+        Parser,
         bits,
         bits::streaming::take as take_bits,
         bytes::streaming::take as take_bytes,
@@ -73,21 +74,20 @@ fn parse_frame(input: &[u8]) -> IResult<&[u8], Frame> {
 }
 
 fn parse_frame_head(input: BitStream) -> IResult<BitStream, (bool, Op, bool, u8)> {
-    let (mut input, fin) = parse_flag(input)?;
+    let (mut input, fin) = flag_p().parse(input)?;
     for _ in 0..3 {
-        let (i, reserved_flag) = parse_flag(input)?;
+        let (i, reserved_flag) = flag_p().parse(input)?;
         input = i;
         assert!(!reserved_flag)
     }
-    let (input, op) = parse_op_code(input)?;
-    let (input, masked) = parse_flag(input)?;
-    let (input, payload_len) = parse_payload_len(input)?;
+    let (input, op) = op_code_p().parse(input)?;
+    let (input, masked) = flag_p().parse(input)?;
+    let (input, payload_len) = payload_len_p().parse(input)?;
     Ok((input, (fin, op, masked, payload_len)))
 }
 
-
-fn parse_flag(input: BitStream) -> IResult<BitStream, bool> {
-    map(take_bits(1usize), |bit: u8| if bit == 0 { false } else { true })(input)
+fn flag_p<'a>() -> impl BitParser<'a, bool> {
+    map(take_bits(1usize), |bit: u8| if bit == 0 { false } else { true })
 }
 
 enum_from_primitive! {
@@ -102,16 +102,22 @@ enum_from_primitive! {
     }
 }
 
-fn parse_op_code(input: BitStream) -> IResult<BitStream, Op> {
-    map_opt(take_bits(4usize), Op::from_u8)(input)
+fn op_code_p<'a>() -> impl BitParser<'a, Op> {
+    map_opt(take_bits(4usize), Op::from_u8)
 }
 
-fn parse_payload_len(input: BitStream) -> IResult<BitStream, u8> {
-    take_bits(7usize)(input)
+fn payload_len_p<'a>() -> impl BitParser<'a, u8> {
+    take_bits(7usize)
 }
 
 type BitStream<'a> = (&'a [u8], usize);
-type NomError<'a> = (&'a [u8], nom::error::ErrorKind);
+
+// Define something like "trait aliases":
+trait BitParser<'a, O>: Parser<BitStream<'a>, O, nom::error::Error<BitStream<'a>>> {}
+impl<'a, T: Parser<BitStream<'a>, O, nom::error::Error<BitStream<'a>>>, O> BitParser<'a, O> for T {}
+
+trait ByteParser<'a, O>: Parser<&'a [u8], O, nom::error::Error<&'a [u8]>> {}
+impl<'a, T: Parser<&'a [u8], O, nom::error::Error<&'a [u8]>>, O> ByteParser<'a, O> for T {}
 
 
 #[cfg(test)]
