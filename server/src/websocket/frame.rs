@@ -50,6 +50,19 @@ impl<'a> Frame<'a> {
     }
 }
 
+fn unmask(masking_key: u32, payload: &mut [u8]) {
+    // I'm attempting to be efficient about this by doing the xor in 4-byte chunks:
+    let mut iter = payload.chunks_exact_mut(size_of::<u32>());
+    for bytes in &mut iter {
+        let masked = u32::from_be_bytes((&bytes as &[u8]).try_into().expect("size mismatch"));
+        let unmasked = masked ^ masking_key;
+        bytes[..].copy_from_slice(&unmasked.to_be_bytes());
+    }
+    for (byte, key) in iter.into_remainder().iter_mut().zip(&masking_key.to_be_bytes()) {
+        *byte = (byte as &u8) ^ key;
+    }
+}
+
 
 fn frame_p<'a>() -> impl ByteParser<'a, Frame<'a>> {
     bits(
