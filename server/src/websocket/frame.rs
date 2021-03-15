@@ -6,7 +6,7 @@ use {
         bits,
         bits::streaming::take as take_bits,
         bytes::streaming::take as take_bytes,
-        combinator::{eof, map, map_opt},
+        combinator::{cond, eof, map, map_opt, success},
         number::streaming::{be_u16, be_u32, be_u64},
         sequence::tuple,
     },
@@ -26,8 +26,8 @@ pub struct Frame<'a> {
 
 impl<'a> Frame<'a> {
     // Currently trivial, but might want different error handling:
-    pub fn parse(input: &[u8]) -> IResult<&[u8], Frame> {
-        parse_frame(input)
+    pub fn parse(input: &'a [u8]) -> IResult<&[u8], Frame<'a>> {
+        frame_p().parse(input)
     }
 
     pub fn payload(&self) -> Vec<u8> {
@@ -51,34 +51,32 @@ impl<'a> Frame<'a> {
 }
 
 
-fn parse_frame(input: &[u8]) -> IResult<&[u8], Frame> {
-    let (input, (fin, op, masked, payload_len)) = bits(parse_frame_head)(input)?;
-    let (input, payload_len) = match payload_len {
-        126 => {
-            let (input, payload_len) = be_u16(input)?;
-            (input, payload_len as usize)
-        },
-        127 => {
-            let (input, payload_len) = be_u64(input)?;
-            (input, payload_len as usize)
-        },
-        _ => (input, payload_len as usize)
-    };
-    let (input, masking_key) = if masked {
-        map(be_u32, |n| Some(n))(input)?
-    } else {
-        (input, None)
-    };
-    let (input, raw_payload) = take_bytes(payload_len)(input)?;
-    eof(input)?;
-    Ok((input, Frame {fin, op, masking_key, raw_payload}))
-}
-
-fn parse_frame_head(input: BitStream) -> IResult<BitStream, (bool, Op, bool, u8)> {
-    let (input, fin) = flag_p().parse(input)?;
-    let (input, _) = count_unit(3, flag_p().map(|res_flag| assert!(!res_flag))).parse(input)?;
-    let (input, (op, masked, payload_len)) = tuple((op_code_p(), flag_p(), payload_len_p())).parse(input)?;
-    Ok((input, (fin, op, masked, payload_len)))
+fn frame_p<'a>() -> impl ByteParser<'a, Frame<'a>> {
+    bits(
+        tuple((
+            flag_p(),
+            count_unit(3, flag_p().map(|res_flag| assert!(!res_flag))),
+            op_code_p(),
+            flag_p(),
+            take_bits(7usize)
+        ))
+    ).flat_map(|(fin, _, op, masked, payload_len)| {
+        // Annoyingly we need to take the input here as without it, even though the match arms
+        // give the same function signatures, they are not of an identical function type:
+        (move |inp| match payload_len {
+            126 => be_u16.map(|l: u16| l as usize).parse(inp),
+            127 => be_u64.map(|l: u64| l as usize).parse(inp),
+            _ => success(payload_len as usize).parse(inp)
+        }).flat_map(move |payload_len| {
+            tuple((
+                cond(masked, be_u32),
+                take_bytes(payload_len),
+                eof
+            ))
+        }).map(move |(masking_key, raw_payload, _)| {
+            Frame { fin, op, masking_key, raw_payload }
+        })
+    })
 }
 
 fn flag_p<'a>() -> impl BitParser<'a, bool> {
@@ -86,7 +84,7 @@ fn flag_p<'a>() -> impl BitParser<'a, bool> {
 }
 
 enum_from_primitive! {
-    #[derive(Debug, PartialEq)]
+    #[derive(Clone, Copy, Debug, PartialEq)]
     enum Op{
         Continuation = 0x0,
         Text = 0x1,
@@ -99,10 +97,6 @@ enum_from_primitive! {
 
 fn op_code_p<'a>() -> impl BitParser<'a, Op> {
     map_opt(take_bits(4usize), Op::from_u8)
-}
-
-fn payload_len_p<'a>() -> impl BitParser<'a, u8> {
-    take_bits(7usize)
 }
 
 fn count_unit<I, O, E, P: Parser<I, O, E>>(n: usize, mut parser: P) -> impl Parser<I, (), E> {
@@ -130,24 +124,24 @@ mod tests {
     use super::*;
     use std::str;
 
-    fn parse_op_code_bytes(input: &[u8]) -> IResult<&[u8], Op> {
-        bits(parse_op_code)(input)
+    fn op_code_byte_p<'a>() -> impl ByteParser<'a, Op> {
+        bits(|inp| op_code_p().parse(inp))
     }
 
     #[test]
     fn test_parse_op_code() {
-        let (_, op_code) = parse_op_code_bytes(&[0b1001_1111, 1u8]).expect("expected success");
+        let (_, op_code) = op_code_byte_p().parse(&[0b1001_1111, 1u8]).expect("expected success");
         assert_eq!(op_code, Op::Ping);
     }
 
     #[test]
     fn test_parse_bad_op_code() {
-        parse_op_code_bytes(&[0b1111_0000, 1u8]).expect_err("expected failure");
+        op_code_byte_p().parse(&[0b1111_0000, 1u8]).expect_err("expected failure");
     }
 
     #[test]
     fn test_parse_unmasked() {
-        let (_, f) = parse_frame(
+        let (_, f) = frame_p().parse(
             &[0x81, 0x05, 0x48, 0x65, 0x6c, 0x6c, 0x6f]
         ).expect("expected success");
         assert!(f.fin);
@@ -158,7 +152,7 @@ mod tests {
 
     #[test]
     fn test_parse_masked() {
-        let (_, f) = parse_frame(
+        let (_, f) = frame_p().parse(
             &[0x81, 0x85, 0x37, 0xfa, 0x21, 0x3d, 0x7f, 0x9f, 0x4d, 0x51, 0x58]
         ).expect("expected success");
         assert!(f.fin);
