@@ -140,7 +140,7 @@ async fn websocket_dialogue(mut upgraded: hyper::upgrade::Upgraded) -> Result<()
         };
         let (_, frame) = websocket::Frame::parse(&buf[0..bytes_read])
             .expect("failed to parse data frame");
-        info!("Server received {:?}", str::from_utf8(&frame.payload()));
+        info!("Server received {:?}", str::from_utf8(&frame.payload));
     }
 }
 

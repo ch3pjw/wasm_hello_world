@@ -17,36 +17,16 @@ use {
 };
 
 
-pub struct Frame<'a> {
-    fin: bool,
-    op: Op,
-    masking_key: Option<u32>,
-    raw_payload: &'a [u8],
+pub struct Frame {
+    pub fin: bool,
+    pub op: Op,
+    pub payload: Vec<u8>,
 }
 
-impl<'a> Frame<'a> {
+impl Frame {
     // Currently trivial, but might want different error handling:
-    pub fn parse(input: &'a [u8]) -> IResult<&[u8], Frame<'a>> {
+    pub fn parse(input: &[u8]) -> IResult<&[u8], Frame> {
         frame_p().parse(input)
-    }
-
-    pub fn payload(&self) -> Vec<u8> {
-        match self.masking_key {
-            None => self.raw_payload.to_vec(),
-            Some(key) => {
-                let mut v = Vec::with_capacity(self.raw_payload.len());
-                // I'm attempting to be efficient about this by doing the xor in 4-byte chunks:
-                let mut iter = self.raw_payload.chunks_exact(size_of::<u32>());
-                for bytes in &mut iter {
-                    let u = u32::from_be_bytes(bytes.try_into().expect("size mismatch"));
-                    v.extend(&(u ^ key).to_be_bytes());
-                }
-                for (data, key) in iter.remainder().iter().zip(&key.to_be_bytes()) {
-                    v.push(data ^ key);
-                };
-                v
-            },
-        }
     }
 }
 
@@ -64,7 +44,7 @@ fn unmask(masking_key: u32, payload: &mut [u8]) {
 }
 
 
-fn frame_p<'a>() -> impl ByteParser<'a, Frame<'a>> {
+fn frame_p<'a>() -> impl ByteParser<'a, Frame> {
     bits(
         tuple((
             flag_p(),
@@ -76,7 +56,7 @@ fn frame_p<'a>() -> impl ByteParser<'a, Frame<'a>> {
     ).flat_map(|(fin, _, op, masked, payload_len)| {
         // Annoyingly we need to take the input here as without it, even though the match arms
         // give the same function signatures, they are not of an identical function type:
-        (move |inp| match payload_len {
+        (move |inp: &'a [u8]| match payload_len {
             126 => be_u16.map(|l: u16| l as usize).parse(inp),
             127 => be_u64.map(|l: u64| l as usize).parse(inp),
             _ => success(payload_len as usize).parse(inp)
@@ -86,8 +66,12 @@ fn frame_p<'a>() -> impl ByteParser<'a, Frame<'a>> {
                 take_bytes(payload_len),
                 eof
             ))
-        }).map(move |(masking_key, raw_payload, _)| {
-            Frame { fin, op, masking_key, raw_payload }
+        }).map(move |(masking_key, payload, _)| {
+            let mut payload = payload.to_vec();
+            if let Some(masking_key) = masking_key {
+                unmask(masking_key, &mut payload);
+            }
+            Frame { fin, op, payload }
         })
     })
 }
@@ -98,7 +82,7 @@ fn flag_p<'a>() -> impl BitParser<'a, bool> {
 
 enum_from_primitive! {
     #[derive(Clone, Copy, Debug, PartialEq)]
-    enum Op{
+    pub enum Op{
         Continuation = 0x0,
         Text = 0x1,
         Binary = 0x2,
@@ -159,8 +143,7 @@ mod tests {
         ).expect("expected success");
         assert!(f.fin);
         assert_eq!(f.op, Op::Text);
-        assert_eq!(f.masking_key, None);
-        assert_eq!(str::from_utf8(f.raw_payload).expect("not utf8"), "Hello");
+        assert_eq!(str::from_utf8(&f.payload).expect("not utf8"), "Hello");
     }
 
     #[test]
@@ -170,8 +153,6 @@ mod tests {
         ).expect("expected success");
         assert!(f.fin);
         assert_eq!(f.op, Op::Text);
-        assert_eq!(f.masking_key, Some(0x37fa213d));
-        assert_eq!(f.raw_payload, &[0x7f, 0x9f, 0x4d, 0x51, 0x58]);
-        assert_eq!(str::from_utf8(&f.payload()).expect("not utf8"), "Hello");
+        assert_eq!(str::from_utf8(&f.payload).expect("not utf8"), "Hello");
     }
 }
