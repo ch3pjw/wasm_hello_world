@@ -23,6 +23,18 @@ pub struct Frame {
     pub payload: Vec<u8>,
 }
 
+enum_from_primitive! {
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub enum Op{
+        Continuation = 0x0,
+        Text = 0x1,
+        Binary = 0x2,
+        Close = 0x8,
+        Ping = 0x9,
+        Pong = 0xa,
+    }
+}
+
 impl Frame {
     // Currently trivial, but might want different error handling:
     pub fn parse(input: &[u8]) -> IResult<&[u8], Frame> {
@@ -78,18 +90,6 @@ fn frame_p<'a>() -> impl ByteParser<'a, Frame> {
 
 fn flag_p<'a>() -> impl BitParser<'a, bool> {
     map(take_bits(1usize), |bit: u8| if bit == 0 { false } else { true })
-}
-
-enum_from_primitive! {
-    #[derive(Clone, Copy, Debug, PartialEq)]
-    pub enum Op{
-        Continuation = 0x0,
-        Text = 0x1,
-        Binary = 0x2,
-        Close = 0x8,
-        Ping = 0x9,
-        Pong = 0xa,
-    }
 }
 
 fn op_code_p<'a>() -> impl BitParser<'a, Op> {
