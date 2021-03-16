@@ -12,6 +12,7 @@ use {
     },
     std::{
         convert::TryInto,
+        io::{Cursor, Read},
         mem::size_of,
     },
 };
@@ -55,6 +56,8 @@ enum_from_primitive! {
 //   + - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - +
 //   |                     Payload Data continued ...                |
 //   +---------------------------------------------------------------+
+
+// Parsing:
 
 impl Frame {
     // Currently trivial, but might want different error handling:
@@ -137,6 +140,26 @@ trait ByteParser<'a, O>: Parser<&'a [u8], O, nom::error::Error<&'a [u8]>> {}
 impl<'a, T: Parser<&'a [u8], O, nom::error::Error<&'a [u8]>>, O> ByteParser<'a, O> for T {}
 
 
+// Serialising:
+
+fn serialise_frame<'a>(frame: &'a Frame, masking_key: Option<u32>) -> impl Read + 'a {
+    let mut header = Vec::with_capacity(14);
+    header.push((u8::from(frame.fin) << 7) | frame.op as u8);
+    let l = frame.payload.len();
+    let short_len = if l < 126 { l } else if l <= (u16::MAX as usize) { 126 } else { 127 };
+    header.push((u8::from(masking_key.is_some()) << 7) | short_len as u8);
+    if short_len == 126 {
+        header.extend(&(l as u16).to_be_bytes());
+    } else if short_len == 127 {
+        header.extend(&(l as u64).to_be_bytes());
+    }
+    if let Some(key) = masking_key {
+        header.extend(&(key as u32).to_be_bytes());
+        todo!("haven't xor'd payload")
+    }
+    Cursor::new(header).chain(Cursor::new(&frame.payload))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,14 +180,24 @@ mod tests {
         op_code_byte_p().parse(&[0b1111_0000, 1u8]).expect_err("expected failure");
     }
 
+    const unmasked_hello: &[u8] = &[0x81, 0x05, 0x48, 0x65, 0x6c, 0x6c, 0x6f];
+
     #[test]
     fn test_parse_unmasked() {
-        let (_, f) = frame_p().parse(
-            &[0x81, 0x05, 0x48, 0x65, 0x6c, 0x6c, 0x6f]
-        ).expect("expected success");
+        let (_, f) = frame_p().parse(unmasked_hello).expect("expected success");
         assert!(f.fin);
         assert_eq!(f.op, Op::Text);
         assert_eq!(str::from_utf8(&f.payload).expect("not utf8"), "Hello");
+    }
+
+    #[test]
+    fn test_serialise_unmasked() {
+        let mut buf: Vec<u8> = Vec::new();
+        let frame = Frame {
+            fin: true, op: Op::Text, payload: "Hello".bytes().collect::<Vec<u8>>()
+        };
+        serialise_frame(&frame, None).read_to_end(&mut buf).expect("expected success");
+        assert_eq!(&buf, unmasked_hello);
     }
 
     #[test]
