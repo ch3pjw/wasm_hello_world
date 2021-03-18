@@ -3,7 +3,7 @@ use {
         digest::Digest,
         sha1::Sha1,
     },
-    futures::{Stream, StreamExt},
+    futures::{StreamExt, SinkExt},
     hyper::{
         Body,
         Request,
@@ -21,9 +21,12 @@ use {
         convert::Infallible,
         net::SocketAddr,
     },
+    tokio_tungstenite::{
+        tungstenite::protocol::{Role, Message},
+        WebSocketStream,
+    },
 };
 
-mod websocket;
 
 #[tokio::main]
 async fn main() {
@@ -130,12 +133,7 @@ fn hv(string: &'static str) -> header::HeaderValue {
 }
 
 
-async fn websocket_dialogue(mut upgraded: hyper::upgrade::Upgraded) -> Result<(), hyper::Error> {
-    use tokio_tungstenite::{
-        tungstenite::protocol::{Role, Message},
-        WebSocketStream,
-    };
-    use futures::sink::SinkExt;
+async fn websocket_dialogue(upgraded: hyper::upgrade::Upgraded) -> Result<(), hyper::Error> {
     let mut wss = WebSocketStream::from_raw_socket(upgraded, Role::Server, Default::default()).await;
     loop {
         match wss.next().await {
