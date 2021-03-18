@@ -64,6 +64,12 @@ impl Frame {
     pub fn parse(input: &[u8]) -> IResult<&[u8], Frame> {
         frame_p().parse(input)
     }
+
+    pub fn serialise(&self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        serialise_frame(&self, None).read_to_end(&mut buf).expect("expected success");
+        buf
+    }
 }
 
 fn unmask(masking_key: u32, payload: &mut [u8]) {
