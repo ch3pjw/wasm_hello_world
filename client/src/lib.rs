@@ -35,14 +35,16 @@ extern "C" {
     fn alert(s: &str);
 }
 
-#[wasm_bindgen(start)]
-pub fn maine() {
+#[wasm_bindgen]
+pub fn main(websocket_url: &str) {
     utils::set_panic_hook();
     init_log();
     yew::initialize();
 
-    spawn_local(async {
-        let (ws, mut msg_rx) = websockets::go("wss://echo.websocket.org").await.expect_throw("oops");
+    // FIXME: My borrowing-fu is weak, there may be a better way to keep the compiler happy:
+    let url = websocket_url.to_string();
+    spawn_local(async move {
+        let (ws, mut msg_rx) = websockets::go(&url).await.expect_throw("oops");
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<String>(32);
         spawn_local(async move {
             loop {
