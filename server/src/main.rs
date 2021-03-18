@@ -3,6 +3,7 @@ use {
         digest::Digest,
         sha1::Sha1,
     },
+    futures::{Stream, StreamExt},
     hyper::{
         Body,
         Request,
@@ -13,21 +14,25 @@ use {
         http,
         service::{make_service_fn, service_fn},
     },
-    log::{info, error, warn},
+    log::{info, error, warn, LevelFilter},
     simple_logger::SimpleLogger,
     std::{
         str,
         convert::Infallible,
         net::SocketAddr,
     },
-    tokio::io::{AsyncReadExt, AsyncWriteExt}
 };
 
 mod websocket;
 
 #[tokio::main]
 async fn main() {
-    SimpleLogger::new().init().unwrap();
+    SimpleLogger::new()
+        .with_module_level("mio", LevelFilter::Warn)
+        .with_module_level("tokio_tungstenite", LevelFilter::Warn)
+        .with_module_level("tungstenite", LevelFilter::Warn)
+        .init()
+        .unwrap();
     let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
 
     let mk_svc = make_service_fn(|_conn| async {
@@ -126,22 +131,29 @@ fn hv(string: &'static str) -> header::HeaderValue {
 
 
 async fn websocket_dialogue(mut upgraded: hyper::upgrade::Upgraded) -> Result<(), hyper::Error> {
-    let mut buf = [0u8; 1024];
+    use tokio_tungstenite::{
+        tungstenite::protocol::{Role, Message},
+        WebSocketStream,
+    };
+    use futures::sink::SinkExt;
+    let mut wss = WebSocketStream::from_raw_socket(upgraded, Role::Server, Default::default()).await;
     loop {
-        let bytes_read = match upgraded.read(&mut buf).await {
-            Ok(bytes_read) => {
-                if bytes_read == 0 /* EOF */ { return Ok(()) };
-                bytes_read
+        match wss.next().await {
+            Some(x) => match x {
+                Ok(msg) => match msg {
+                    Message::Text(s) => {
+                        info!("Server received text {:?}", s);
+                        wss.send(Message::Text(s)).await.expect("how can sending fail?");
+                    }
+                    x => warn!("Server received not test {:?}", x)
+                },
+                Err(e) => error!("Server errored! {:?}", e)
             },
-            Err(e) => {
-                error!("Websocket error {:?}", e);
-                todo!("translate e into hyper::Error or change our error type everywhere")
+            None => {
+                warn!("End of stream?");
+                break Ok(())
             }
-        };
-        let (_, frame) = websocket::Frame::parse(&buf[0..bytes_read])
-            .expect("failed to parse data frame");
-        info!("Server received {:?}", str::from_utf8(&frame.payload));
-        upgraded.write(&frame.serialise());
+        }
     }
 }
 
