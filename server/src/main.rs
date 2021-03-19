@@ -150,7 +150,6 @@ fn handle_ws(mut req: Request<Body>) -> Result<Response<Body>, http::Error> {
         "Sec-WebSocket-Accept",
         header::HeaderValue::from_str(&sec_websocket_accept_header).expect("this should never fail")
     );
-    headers.insert("Sec-WebSocket-Protocol", hv("foo"));
     return Ok(resp);
 }
 
