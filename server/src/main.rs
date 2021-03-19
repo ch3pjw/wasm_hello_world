@@ -6,6 +6,7 @@ use {
     futures::{StreamExt, SinkExt},
     hyper::{
         Body,
+        body::Bytes,
         Request,
         Response,
         Server,
@@ -36,21 +37,39 @@ async fn main() {
         .with_module_level("tungstenite", LevelFilter::Warn)
         .init()
         .unwrap();
-    let addr = SocketAddr::from(([127, 0, 0, 1], 8080));
+    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
 
     let mk_svc = make_service_fn(|_conn| async {
         Ok::<_, Infallible>(service_fn(handle_request))
     });
 
     let server = Server::bind(&addr).serve(mk_svc);
-    info!("Visit http://127.0.0.1:8080/index.html to start");
+    info!("Visit http://0.0.0.0:8080/index.html to start");
     server.await;
 }
 
+const CLIENT_HTML_TEMPLATE: &[u8] = include_bytes!("../templates/index.html.template");
 
-const CLIENT_HTML: &[u8] = include_bytes!("../../client/static/index.html");
-const CLIENT_JS: &[u8] = include_bytes!("../../client/static/wasm_hello_world.js");
-const CLIENT_WASM: &[u8] = include_bytes!("../../client/static/wasm_hello_world_bg.wasm");
+fn generate_client_html(host: &[u8]) -> Bytes {
+    // TODO: can we do this up front?
+    let mut head = CLIENT_HTML_TEMPLATE;
+    let mut tail = &CLIENT_HTML_TEMPLATE[0..0];
+    for (i, pair) in CLIENT_HTML_TEMPLATE.windows(2).enumerate() {
+        if pair == b"{}" {
+            head = &CLIENT_HTML_TEMPLATE[..i];
+            tail = &CLIENT_HTML_TEMPLATE[i+2..];
+            break
+        }
+    }
+    Bytes::from([head, host, tail].concat())
+}
+
+const CLIENT_JS: Bytes = Bytes::from_static(
+    include_bytes!("../../client/static/wasm_hello_world.js")
+);
+const CLIENT_WASM: Bytes = Bytes::from_static(
+    include_bytes!("../../client/static/wasm_hello_world_bg.wasm")
+);
 
 async fn handle_request(req: Request<Body>) -> Result<Response<Body>, http::Error> {
     if req.method() != http::Method::GET {
@@ -68,7 +87,14 @@ async fn handle_request(req: Request<Body>) -> Result<Response<Body>, http::Erro
 fn handle_get(req: Request<Body>) -> Result<Response<Body>, http::Error> {
     let b = Response::builder();
     let x = match req.uri().path() {
-        "/" | "/index.html" => Some(("text/html", CLIENT_HTML)),
+        "/" | "/index.html" => {
+            if let Some(host) = req.headers().get("host") {
+                Some(("text/html", generate_client_html(host.as_bytes())))
+            } else {
+                warn!("Request missing host header!");
+                None
+            }
+        },
         "/wasm_hello_world.js" => Some(("application/javascript", CLIENT_JS)),
         "/wasm_hello_world_bg.wasm" => Some(("application/wasm", CLIENT_WASM)),
         path => {
