@@ -71,7 +71,7 @@ impl Service<Request<Body>> for RequestHandler {
 
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     SimpleLogger::new()
         .with_module_level("mio", LevelFilter::Warn)
         .with_module_level("tokio_tungstenite", LevelFilter::Warn)
@@ -92,7 +92,8 @@ async fn main() {
     });
     let server = Server::bind(&addr).serve(App { tx });
     info!("Visit http://0.0.0.0:8080/index.html to start");
-    server.await;
+    server.await?;
+    Ok(())
 }
 
 const CLIENT_HTML_TEMPLATE: &[u8] = include_bytes!("../templates/index.html.template");
