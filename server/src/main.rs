@@ -22,6 +22,7 @@ use {
         convert::Infallible,
         net::SocketAddr,
         pin::Pin,
+        sync::{Arc, Mutex},
         task::{Context, Poll},
     },
     tokio_tungstenite::{
@@ -31,11 +32,11 @@ use {
 };
 
 
-struct App { }
+struct App { state: Arc<Mutex<u8>> }
 
 impl<Conn> Service<Conn> for App {
     type Response = RequestHandler;
-    type Error = hyper::Error;
+    type Error = Infallible;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, _: &mut Context) -> Poll<Result<(), Self::Error>> {
@@ -43,12 +44,12 @@ impl<Conn> Service<Conn> for App {
     }
 
     fn call(&mut self, _: Conn) -> Self::Future {
-        Box::pin(async move { Ok( RequestHandler { } ) })
+        let state = Arc::clone(&self.state);
+        Box::pin(async move { Ok( RequestHandler { state } ) })
     }
 }
 
-struct RequestHandler {
-}
+struct RequestHandler { state: Arc<Mutex<u8>> }
 
 impl Service<Request<Body>> for RequestHandler {
     type Response = Response<Body>;
@@ -75,7 +76,7 @@ async fn main() {
         .unwrap();
     let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
 
-    let server = Server::bind(&addr).serve(App { });
+    let server = Server::bind(&addr).serve(App { state: Arc::new(Mutex::new(0)) });
     info!("Visit http://0.0.0.0:8080/index.html to start");
     server.await;
 }
