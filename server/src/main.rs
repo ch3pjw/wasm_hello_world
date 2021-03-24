@@ -3,7 +3,7 @@ use {
         digest::Digest,
         sha1::Sha1,
     },
-    futures::{StreamExt, SinkExt},
+    futures::{Future, StreamExt, SinkExt},
     hyper::{
         Body,
         body::Bytes,
@@ -13,7 +13,7 @@ use {
         StatusCode,
         header,
         http,
-        service::{make_service_fn, service_fn},
+        service::{Service},
     },
     log::{info, error, warn, LevelFilter},
     simple_logger::SimpleLogger,
@@ -21,12 +21,48 @@ use {
         str,
         convert::Infallible,
         net::SocketAddr,
+        pin::Pin,
+        task::{Context, Poll},
     },
     tokio_tungstenite::{
         tungstenite::protocol::{Role, Message},
         WebSocketStream,
     },
 };
+
+
+struct App { }
+
+impl<Conn> Service<Conn> for App {
+    type Response = RequestHandler;
+    type Error = hyper::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, _: &mut Context) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, _: Conn) -> Self::Future {
+        Box::pin(async move { Ok( RequestHandler { } ) })
+    }
+}
+
+struct RequestHandler {
+}
+
+impl Service<Request<Body>> for RequestHandler {
+    type Response = Response<Body>;
+    type Error = http::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, _: &mut Context) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: Request<Body>) -> Self::Future {
+        Box::pin(handle_request(req))
+    }
+}
 
 
 #[tokio::main]
@@ -39,11 +75,7 @@ async fn main() {
         .unwrap();
     let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
 
-    let mk_svc = make_service_fn(|_conn| async {
-        Ok::<_, Infallible>(service_fn(handle_request))
-    });
-
-    let server = Server::bind(&addr).serve(mk_svc);
+    let server = Server::bind(&addr).serve(App { });
     info!("Visit http://0.0.0.0:8080/index.html to start");
     server.await;
 }
