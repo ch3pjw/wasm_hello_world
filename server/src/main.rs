@@ -3,7 +3,10 @@ use {
         digest::Digest,
         sha1::Sha1,
     },
-    futures::{Future, StreamExt, SinkExt},
+    futures::{
+        Future, StreamExt, SinkExt,
+        channel::mpsc,
+    },
     hyper::{
         Body,
         body::Bytes,
@@ -22,7 +25,6 @@ use {
         convert::Infallible,
         net::SocketAddr,
         pin::Pin,
-        sync::{Arc, Mutex},
         task::{Context, Poll},
     },
     tokio_tungstenite::{
@@ -32,7 +34,7 @@ use {
 };
 
 
-struct App { state: Arc<Mutex<u8>> }
+struct App { tx: mpsc::UnboundedSender<()> }
 
 impl<Conn> Service<Conn> for App {
     type Response = RequestHandler;
@@ -44,12 +46,12 @@ impl<Conn> Service<Conn> for App {
     }
 
     fn call(&mut self, _: Conn) -> Self::Future {
-        let state = Arc::clone(&self.state);
-        Box::pin(async move { Ok( RequestHandler { state } ) })
+        let tx = self.tx.clone();
+        Box::pin(async move { Ok( RequestHandler { tx } ) })
     }
 }
 
-struct RequestHandler { state: Arc<Mutex<u8>> }
+struct RequestHandler { tx: mpsc::UnboundedSender<()> }
 
 impl Service<Request<Body>> for RequestHandler {
     type Response = Response<Body>;
@@ -61,7 +63,9 @@ impl Service<Request<Body>> for RequestHandler {
     }
 
     fn call(&mut self, req: Request<Body>) -> Self::Future {
-        Box::pin(handle_request(req))
+        // Oh dear goodness why do I have to clone so much crap?!
+        let tx = Box::new(self.tx.clone());
+        Box::pin(handle_request(tx, req))
     }
 }
 
@@ -76,7 +80,17 @@ async fn main() {
         .unwrap();
     let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
 
-    let server = Server::bind(&addr).serve(App { state: Arc::new(Mutex::new(0)) });
+    let (tx, mut rx) = mpsc::unbounded::<()>();
+
+    tokio::task::spawn(async move {
+        loop {
+            match rx.next().await {
+                Some(()) => warn!("I received something!"),
+                None => break
+            }
+        }
+    });
+    let server = Server::bind(&addr).serve(App { tx });
     info!("Visit http://0.0.0.0:8080/index.html to start");
     server.await;
 }
@@ -104,12 +118,13 @@ const CLIENT_WASM: Bytes = Bytes::from_static(
     include_bytes!("../../client/static/wasm_hello_world_bg.wasm")
 );
 
-async fn handle_request(req: Request<Body>) -> Result<Response<Body>, http::Error> {
+async fn handle_request(mut tx: Box<mpsc::UnboundedSender<()>>, req: Request<Body>) -> Result<Response<Body>, http::Error> {
     if req.method() != http::Method::GET {
         return err_resp(StatusCode::METHOD_NOT_ALLOWED);
     }
     // TODO: The URI scheme doesn't seem to get supplied, so we can't use that to switch handler
     // :-(
+    tx.send(()).await;
     if req.headers().contains_key(header::UPGRADE) {
         handle_ws(req)
     } else {
