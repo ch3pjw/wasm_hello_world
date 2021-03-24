@@ -4,8 +4,8 @@ use {
         sha1::Sha1,
     },
     futures::{
-        Future, StreamExt, SinkExt,
-        future::{ok, Ready},
+        StreamExt, SinkExt,
+        future::{ok, ready, Ready},
         channel::mpsc,
     },
     hyper::{
@@ -25,7 +25,6 @@ use {
         str,
         convert::Infallible,
         net::SocketAddr,
-        pin::Pin,
         task::{Context, Poll},
     },
     tokio_tungstenite::{
@@ -56,16 +55,14 @@ struct RequestHandler { tx: mpsc::UnboundedSender<()> }
 impl Service<Request<Body>> for RequestHandler {
     type Response = Response<Body>;
     type Error = http::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+    type Future = Ready<Result<Self::Response, Self::Error>>;
 
     fn poll_ready(&mut self, _: &mut Context) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 
     fn call(&mut self, req: Request<Body>) -> Self::Future {
-        // Oh dear goodness why do I have to clone so much crap?!
-        let tx = Box::new(self.tx.clone());
-        Box::pin(handle_request(tx, req))
+        ready(handle_request(&self.tx, req))
     }
 }
 
@@ -119,15 +116,14 @@ const CLIENT_WASM: Bytes = Bytes::from_static(
     include_bytes!("../../client/static/wasm_hello_world_bg.wasm")
 );
 
-async fn handle_request(mut tx: Box<mpsc::UnboundedSender<()>>, req: Request<Body>) -> Result<Response<Body>, http::Error> {
+fn handle_request(tx: &mpsc::UnboundedSender<()>, req: Request<Body>) -> Result<Response<Body>, http::Error> {
     if req.method() != http::Method::GET {
         return err_resp(StatusCode::METHOD_NOT_ALLOWED);
     }
     // TODO: The URI scheme doesn't seem to get supplied, so we can't use that to switch handler
     // :-(
-    tx.send(()).await;
     if req.headers().contains_key(header::UPGRADE) {
-        handle_ws(req)
+        handle_ws(tx, req)
     } else {
         handle_get(req)
     }
@@ -164,7 +160,7 @@ fn err_resp(code: StatusCode) -> Result<Response<Body>, http::Error> {
     Response::builder().status(code).body(Body::empty())
 }
 
-fn handle_ws(mut req: Request<Body>) -> Result<Response<Body>, http::Error> {
+fn handle_ws(tx: &mpsc::UnboundedSender<()>, mut req: Request<Body>) -> Result<Response<Body>, http::Error> {
     if req.headers().get(header::UPGRADE) != Some(&hv("websocket")) ||
             req.headers().get("sec-websocket-version") != Some(&hv("13")) {
         return err_resp(StatusCode::BAD_REQUEST);
@@ -179,10 +175,11 @@ fn handle_ws(mut req: Request<Body>) -> Result<Response<Body>, http::Error> {
         Some(key) => mk_accept_header(key.as_bytes())
     };
 
+    let tx = tx.clone();
     tokio::task::spawn(async move {
         match hyper::upgrade::on(&mut req).await {
             Ok(upgraded) => {
-                if let Err(e) = websocket_dialogue(upgraded).await {
+                if let Err(e) = websocket_dialogue(tx, upgraded).await {
                     error!("server websocket IO error: {}", e)
                 }
             },
@@ -207,7 +204,7 @@ fn hv(string: &'static str) -> header::HeaderValue {
 }
 
 
-async fn websocket_dialogue(upgraded: hyper::upgrade::Upgraded) -> Result<(), hyper::Error> {
+async fn websocket_dialogue(mut tx: mpsc::UnboundedSender<()>, upgraded: hyper::upgrade::Upgraded) -> Result<(), hyper::Error> {
     let mut wss = WebSocketStream::from_raw_socket(upgraded, Role::Server, Default::default()).await;
     loop {
         match wss.next().await {
@@ -215,6 +212,7 @@ async fn websocket_dialogue(upgraded: hyper::upgrade::Upgraded) -> Result<(), hy
                 Ok(msg) => match msg {
                     Message::Text(s) => {
                         info!("Server received text {:?}", s);
+                        tx.send(()).await;
                         wss.send(Message::Text(s)).await.expect("how can sending fail?");
                     }
                     x => warn!("Server received not text {:?}", x)
