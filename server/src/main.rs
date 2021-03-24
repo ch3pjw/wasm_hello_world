@@ -5,6 +5,7 @@ use {
     },
     futures::{
         Future, StreamExt, SinkExt,
+        future::{ok, Ready},
         channel::mpsc,
     },
     hyper::{
@@ -39,15 +40,14 @@ struct App { tx: mpsc::UnboundedSender<()> }
 impl<Conn> Service<Conn> for App {
     type Response = RequestHandler;
     type Error = Infallible;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+    type Future = Ready<Result<Self::Response, Self::Error>>;
 
     fn poll_ready(&mut self, _: &mut Context) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 
     fn call(&mut self, _: Conn) -> Self::Future {
-        let tx = self.tx.clone();
-        Box::pin(async move { Ok( RequestHandler { tx } ) })
+        ok(RequestHandler { tx: self.tx.clone() })
     }
 }
 
