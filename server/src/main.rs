@@ -216,7 +216,7 @@ async fn websocket_dialogue(upgraded: hyper::upgrade::Upgraded) -> Result<(), hy
                         info!("Server received text {:?}", s);
                         wss.send(Message::Text(s)).await.expect("how can sending fail?");
                     }
-                    x => warn!("Server received not test {:?}", x)
+                    x => warn!("Server received not text {:?}", x)
                 },
                 Err(e) => error!("Server errored! {:?}", e)
             },
