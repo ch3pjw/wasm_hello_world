@@ -5,7 +5,7 @@ use {
     },
     futures::{
         StreamExt, SinkExt,
-        future::{ok, ready, Ready},
+        future::{join_all, select, ok, ready, Ready, Either},
         channel::mpsc,
     },
     hyper::{
@@ -34,7 +34,13 @@ use {
 };
 
 
-struct App { tx: mpsc::UnboundedSender<()> }
+enum AppCmd {
+    NewClient(mpsc::UnboundedSender<String>),
+    ClientMsg(Message),
+}
+
+
+struct App { tx: mpsc::UnboundedSender<AppCmd> }
 
 impl<Conn> Service<Conn> for App {
     type Response = RequestHandler;
@@ -50,7 +56,7 @@ impl<Conn> Service<Conn> for App {
     }
 }
 
-struct RequestHandler { tx: mpsc::UnboundedSender<()> }
+struct RequestHandler { tx: mpsc::UnboundedSender<AppCmd> }
 
 impl Service<Request<Body>> for RequestHandler {
     type Response = Response<Body>;
@@ -77,12 +83,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .unwrap();
     let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
 
-    let (tx, mut rx) = mpsc::unbounded::<()>();
+    let (tx, mut rx) = mpsc::unbounded();
 
     tokio::task::spawn(async move {
+        let mut client_txs = Vec::new();
         loop {
             match rx.next().await {
-                Some(()) => warn!("I received something!"),
+                Some(cmd) => match cmd {
+                    AppCmd::NewClient(client_tx) => {
+                        info!("new client connected!");
+                        client_txs.push(client_tx);
+                    },
+                    AppCmd::ClientMsg(msg) => match msg {
+                        Message::Text(s) => {
+                            info!("Server received text {:?}", s);
+                            join_all(client_txs.iter_mut().map(|tx| tx.send(s.clone()))).await;
+                        }
+                        // FIXME: One of the things we receive here is a close, and we should
+                        // remove the client_tx when we get that!
+                        x => warn!("Server received not text {:?}", x)
+                    }
+                }
                 None => break
             }
         }
@@ -116,7 +137,7 @@ const CLIENT_WASM: Bytes = Bytes::from_static(
     include_bytes!("../../client/static/wasm_hello_world_bg.wasm")
 );
 
-fn handle_request(tx: &mpsc::UnboundedSender<()>, req: Request<Body>) -> Result<Response<Body>, http::Error> {
+fn handle_request(tx: &mpsc::UnboundedSender<AppCmd>, req: Request<Body>) -> Result<Response<Body>, http::Error> {
     if req.method() != http::Method::GET {
         return err_resp(StatusCode::METHOD_NOT_ALLOWED);
     }
@@ -160,7 +181,7 @@ fn err_resp(code: StatusCode) -> Result<Response<Body>, http::Error> {
     Response::builder().status(code).body(Body::empty())
 }
 
-fn handle_ws(tx: &mpsc::UnboundedSender<()>, mut req: Request<Body>) -> Result<Response<Body>, http::Error> {
+fn handle_ws(tx: &mpsc::UnboundedSender<AppCmd>, mut req: Request<Body>) -> Result<Response<Body>, http::Error> {
     if req.headers().get(header::UPGRADE) != Some(&hv("websocket")) ||
             req.headers().get("sec-websocket-version") != Some(&hv("13")) {
         return err_resp(StatusCode::BAD_REQUEST);
@@ -204,24 +225,44 @@ fn hv(string: &'static str) -> header::HeaderValue {
 }
 
 
-async fn websocket_dialogue(mut tx: mpsc::UnboundedSender<()>, upgraded: hyper::upgrade::Upgraded) -> Result<(), hyper::Error> {
-    let mut wss = WebSocketStream::from_raw_socket(upgraded, Role::Server, Default::default()).await;
+async fn websocket_dialogue(mut app_tx: mpsc::UnboundedSender<AppCmd>, upgraded: hyper::upgrade::Upgraded) -> Result<(), hyper::Error> {
+    let (mut ws_tx, mut ws_rx) = WebSocketStream::from_raw_socket(upgraded, Role::Server, Default::default())
+        .await.split();
+    let (client_tx, mut client_rx) = mpsc::unbounded();
+    app_tx.send(AppCmd::NewClient(client_tx)).await;
+    let mut wss_fut = ws_rx.next();
+    let mut app_fut = client_rx.next();
     loop {
-        match wss.next().await {
-            Some(x) => match x {
-                Ok(msg) => match msg {
-                    Message::Text(s) => {
-                        info!("Server received text {:?}", s);
-                        tx.send(()).await;
-                        wss.send(Message::Text(s)).await.expect("how can sending fail?");
+        match select(wss_fut, app_fut).await {
+            Either::Left((ws_data, pending_app_fut)) => {
+                wss_fut = ws_rx.next();
+                app_fut = pending_app_fut;
+                match ws_data {
+                    Some(x) => match x {
+                        Ok(msg) => {
+                            app_tx.send(AppCmd::ClientMsg(msg)).await;
+                        },
+                        Err(e) => error!("Server errored! {:?}", e)
+                    },
+                    None => {
+                        warn!("End of stream?");
+                        break Ok(())
                     }
-                    x => warn!("Server received not text {:?}", x)
-                },
-                Err(e) => error!("Server errored! {:?}", e)
+                }
             },
-            None => {
-                warn!("End of stream?");
-                break Ok(())
+
+            Either::Right((app_data, pending_wss_fut)) => {
+                wss_fut = pending_wss_fut;
+                app_fut = client_rx.next();
+                match app_data {
+                    Some(string) =>
+                        ws_tx.send(Message::Text(string))
+                            .await.expect("how can sending fail?"),
+                    None => {
+                        warn!("App stopped sending to client?!");
+                        break Ok(())
+                    }
+                }
             }
         }
     }
