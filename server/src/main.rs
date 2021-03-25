@@ -68,7 +68,16 @@ impl Service<Request<Body>> for RequestHandler {
     }
 
     fn call(&mut self, req: Request<Body>) -> Self::Future {
-        ready(handle_request(&self.tx, req))
+        let resp = if req.method() != http::Method::GET {
+            err_resp(StatusCode::METHOD_NOT_ALLOWED)
+        } else if req.headers().contains_key(header::UPGRADE) {
+            // TODO: The URI scheme doesn't seem to get supplied, so we can't use that to switch
+            // handler :-(
+            handle_ws(&self.tx, req)
+        } else {
+            handle_get(req)
+        };
+        ready(resp)
     }
 }
 
@@ -136,19 +145,6 @@ const CLIENT_JS: Bytes = Bytes::from_static(
 const CLIENT_WASM: Bytes = Bytes::from_static(
     include_bytes!("../../client/static/wasm_hello_world_bg.wasm")
 );
-
-fn handle_request(tx: &mpsc::UnboundedSender<AppCmd>, req: Request<Body>) -> Result<Response<Body>, http::Error> {
-    if req.method() != http::Method::GET {
-        return err_resp(StatusCode::METHOD_NOT_ALLOWED);
-    }
-    // TODO: The URI scheme doesn't seem to get supplied, so we can't use that to switch handler
-    // :-(
-    if req.headers().contains_key(header::UPGRADE) {
-        handle_ws(tx, req)
-    } else {
-        handle_get(req)
-    }
-}
 
 fn handle_get(req: Request<Body>) -> Result<Response<Body>, http::Error> {
     let b = Response::builder();
