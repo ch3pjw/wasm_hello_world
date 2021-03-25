@@ -47,35 +47,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
-struct App { }
+struct App {
+    clients: Vec<Client>
+}
 
 impl App {
     pub fn new() -> Self {
-        App { }
+        App { clients: Vec::new() }
     }
 
-    pub async fn serve(self, addr: &SocketAddr) -> Result<(), hyper::Error> {
+    pub async fn serve(mut self, addr: &SocketAddr) -> Result<Self, hyper::Error> {
         let (tx, rx) = mpsc::unbounded();
-        tokio::task::spawn(Self::app_main(rx));
+        let handle = tokio::task::spawn(self.app_main(rx));
         let server = Server::bind(addr);
         info!("Visit http://{}/index.html to start", &addr);
-        server.serve(ConnectionHandler { tx }).await
+        server.serve(ConnectionHandler { tx }).await?;
+        Ok(handle.await.expect("join error"))
     }
 
-    async fn app_main(mut rx: mpsc::UnboundedReceiver<AppCmd>) -> () {
-        let mut client_txs = Vec::new();
+    async fn app_main(mut self, mut rx: mpsc::UnboundedReceiver<AppCmd>) -> Self {
         loop {
             match rx.next().await {
                 Some(cmd) => match cmd {
                     AppCmd::NewClient(client_tx) => {
                         info!("new client connected!");
-                        client_txs.push(client_tx);
+                        self.clients.push(Client { tx: client_tx });
                     },
                     AppCmd::ClientMsg(msg) => match msg {
                         Message::Binary(b) => todo!(),
                         Message::Text(s) => {
                             info!("Server received text {:?}", s);
-                            join_all(client_txs.iter_mut().map(|tx| tx.send(s.clone()))).await;
+                            join_all(self.clients.iter_mut().map(
+                                |client| client.tx.send(Message::Text(s.clone()))
+                            )).await;
                         }
                         Message::Ping(b) => todo!(),
                         Message::Pong(b) => todo!(),
@@ -85,11 +89,16 @@ impl App {
                 None => break
             }
         }
+        self
     }
 }
 
+struct Client {
+    tx: mpsc::UnboundedSender<Message>
+}
+
 enum AppCmd {
-    NewClient(mpsc::UnboundedSender<String>),
+    NewClient(mpsc::UnboundedSender<Message>),
     ClientMsg(Message),
 }
 
@@ -264,9 +273,7 @@ async fn websocket_dialogue(mut app_tx: mpsc::UnboundedSender<AppCmd>, upgraded:
                 wss_fut = pending_wss_fut;
                 app_fut = client_rx.next();
                 match app_data {
-                    Some(string) =>
-                        ws_tx.send(Message::Text(string))
-                            .await.expect("how can sending fail?"),
+                    Some(msg) => ws_tx.send(msg).await.expect("how can sending fail?"),
                     None => {
                         warn!("App stopped sending to client?!");
                         break Ok(())
