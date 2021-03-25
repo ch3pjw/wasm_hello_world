@@ -146,8 +146,6 @@ impl App {
                         Message::Pong(b) => todo!(),
                         Message::Close(b) => {
                             warn!("client {} disconnected with {:?}", client_id, b);
-                            // FIXME: I think technically we're supposed to reply with a Close
-                            // too...
                             self.clients.remove(&client_id).expect("no client in map");
                             if self.shutting_down && self.clients.len() == 0 {
                                 info!("Last client left, bye!");
@@ -340,6 +338,10 @@ async fn websocket_dialogue(mut app_tx: mpsc::UnboundedSender<AppCmd>, upgraded:
         match both.next().await {
             Some(Left(ws_data)) => match ws_data {
                 Ok(msg) => {
+                    if let Message::Close(ref x) = msg {
+                        // Make sure we tell the client we accept their close:
+                        ws_tx.send(msg.clone()).await.expect("le fail");
+                    }
                     app_tx.send(AppCmd::ClientMsg(client_id.unwrap(), msg)).await;
                 },
                 Err(e) => error!("Server errored! {:?}", e)
