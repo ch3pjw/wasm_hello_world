@@ -40,9 +40,49 @@ enum AppCmd {
 }
 
 
-struct App { tx: mpsc::UnboundedSender<AppCmd> }
+struct App { }
 
-impl<Conn> Service<Conn> for App {
+impl App {
+    fn new() -> Self {
+        App { }
+    }
+
+    async fn serve(self, addr: &SocketAddr) -> Result<(), hyper::Error> {
+        let (tx, rx) = mpsc::unbounded();
+        tokio::task::spawn(Self::something(rx));
+        Server::bind(addr).serve(ConnectionHandler { tx }).await
+    }
+
+    async fn something(mut rx: mpsc::UnboundedReceiver<AppCmd>) -> () {
+        let mut client_txs = Vec::new();
+        loop {
+            match rx.next().await {
+                Some(cmd) => match cmd {
+                    AppCmd::NewClient(client_tx) => {
+                        info!("new client connected!");
+                        client_txs.push(client_tx);
+                    },
+                    AppCmd::ClientMsg(msg) => match msg {
+                        Message::Text(s) => {
+                            info!("Server received text {:?}", s);
+                            join_all(client_txs.iter_mut().map(|tx| tx.send(s.clone()))).await;
+                        }
+                        // FIXME: One of the things we receive here is a close, and we should
+                        // remove the client_tx when we get that!
+                        x => warn!("Server received not text {:?}", x)
+                    }
+                }
+                None => break
+            }
+        }
+    }
+}
+
+struct ConnectionHandler {
+    tx: mpsc::UnboundedSender<AppCmd>
+}
+
+impl<Conn> Service<Conn> for ConnectionHandler {
     type Response = RequestHandler;
     type Error = Infallible;
     type Future = Ready<Result<Self::Response, Self::Error>>;
@@ -91,35 +131,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .init()
         .unwrap();
     let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
-
-    let (tx, mut rx) = mpsc::unbounded();
-
-    tokio::task::spawn(async move {
-        let mut client_txs = Vec::new();
-        loop {
-            match rx.next().await {
-                Some(cmd) => match cmd {
-                    AppCmd::NewClient(client_tx) => {
-                        info!("new client connected!");
-                        client_txs.push(client_tx);
-                    },
-                    AppCmd::ClientMsg(msg) => match msg {
-                        Message::Text(s) => {
-                            info!("Server received text {:?}", s);
-                            join_all(client_txs.iter_mut().map(|tx| tx.send(s.clone()))).await;
-                        }
-                        // FIXME: One of the things we receive here is a close, and we should
-                        // remove the client_tx when we get that!
-                        x => warn!("Server received not text {:?}", x)
-                    }
-                }
-                None => break
-            }
-        }
-    });
-    let server = Server::bind(&addr).serve(App { tx });
-    info!("Visit http://0.0.0.0:8080/index.html to start");
-    server.await?;
+    let app = App::new();
+    info!("Visit http://{}/index.html to start", &addr);
+    app.serve(&addr).await?;
     Ok(())
 }
 
