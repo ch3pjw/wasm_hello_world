@@ -5,6 +5,7 @@ use {
     },
     futures::{
         stream, StreamExt, SinkExt,
+        FutureExt,
         future::{join_all, ok, ready, Ready, Either::{Left, Right}},
         channel::mpsc,
     },
@@ -28,6 +29,7 @@ use {
         net::SocketAddr,
         task::{Context, Poll},
     },
+    tokio::signal::unix::{signal, Signal, SignalKind},
     tokio_tungstenite::{
         tungstenite::protocol::{Role, Message},
         WebSocketStream,
@@ -43,37 +45,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .with_module_level("tungstenite", LevelFilter::Warn)
         .init()
         .unwrap();
-    let app = App::new();
+    let sigint = signal(SignalKind::interrupt()).expect("failed to set up signal handler");
+    let app = App::new(sigint);
     app.serve(&SocketAddr::from(([0, 0, 0, 0], 8080))).await?;
     Ok(())
 }
 
 struct App {
+    sigint: Option<Signal>,
     clients: BTreeMap<u16, Client>,
     next_client_id: u16,
 }
 
 impl App {
-    pub fn new() -> Self {
+    pub fn new(sigint: Signal) -> Self {
         App {
+            sigint: Some(sigint),
             clients: BTreeMap::new(),
             next_client_id: 0,
         }
     }
 
-    pub async fn serve(self, addr: &SocketAddr) -> Result<Self, hyper::Error> {
+    pub async fn serve(mut self, addr: &SocketAddr) -> Result<(), hyper::Error> {
         let (tx, rx) = mpsc::unbounded();
+        // We have to be able to take the Signal out of self so that we can pass self.app_main to
+        // spawn...
+        let mut sigint = self.sigint.take().unwrap();
         let handle = tokio::task::spawn(self.app_main(rx));
-        let server = Server::bind(addr);
+        let server_builder = Server::bind(addr);
         info!("Visit http://{}/index.html to start", &addr);
-        server.serve(ConnectionHandler { tx }).await?;
+        let server = server_builder
+            .serve(ConnectionHandler { tx })
+            .with_graceful_shutdown(sigint.recv().map(|o| o.unwrap_or(())));
+        // If we just do this one next on the stream, there's no point in wrapping the
+        // Signal::recv()...
+        server.await?;
         Ok(handle.await.expect("join error"))
     }
 
-    async fn app_main(mut self, mut rx: mpsc::UnboundedReceiver<AppCmd>) -> Self {
+    async fn app_main(mut self, rx: mpsc::UnboundedReceiver<AppCmd>) {
+        let mut rx = rx.map(|x| Right::<(), _>(x));
         loop {
             match rx.next().await {
-                Some(cmd) => match cmd {
+                Some(Left(_)) => {
+                    warn!("someone hit ctrl-c on me, the cheek!");
+                    break
+                },
+                Some(Right(cmd)) => match cmd {
                     AppCmd::NewClient(mut client_tx) => {
                         let id = self.next_client_id;
                         info!("new client ({}) connected!", id);
@@ -108,7 +126,6 @@ impl App {
                 None => break
             }
         }
-        self
     }
 }
 
