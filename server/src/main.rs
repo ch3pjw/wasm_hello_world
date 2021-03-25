@@ -72,13 +72,14 @@ impl App {
                         client_txs.push(client_tx);
                     },
                     AppCmd::ClientMsg(msg) => match msg {
+                        Message::Binary(b) => todo!(),
                         Message::Text(s) => {
                             info!("Server received text {:?}", s);
                             join_all(client_txs.iter_mut().map(|tx| tx.send(s.clone()))).await;
                         }
-                        // FIXME: One of the things we receive here is a close, and we should
-                        // remove the client_tx when we get that!
-                        x => warn!("Server received not text {:?}", x)
+                        Message::Ping(b) => todo!(),
+                        Message::Pong(b) => todo!(),
+                        Message::Close(b) => todo!("remove client_tx!"),
                     }
                 }
                 None => break
