@@ -34,6 +34,22 @@ use {
 };
 
 
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    SimpleLogger::new()
+        .with_module_level("mio", LevelFilter::Warn)
+        .with_module_level("tokio_tungstenite", LevelFilter::Warn)
+        .with_module_level("tungstenite", LevelFilter::Warn)
+        .init()
+        .unwrap();
+    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
+    let app = App::new();
+    info!("Visit http://{}/index.html to start", &addr);
+    app.serve(&addr).await?;
+    Ok(())
+}
+
+
 enum AppCmd {
     NewClient(mpsc::UnboundedSender<String>),
     ClientMsg(Message),
@@ -119,22 +135,6 @@ impl Service<Request<Body>> for RequestHandler {
         };
         ready(resp)
     }
-}
-
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    SimpleLogger::new()
-        .with_module_level("mio", LevelFilter::Warn)
-        .with_module_level("tokio_tungstenite", LevelFilter::Warn)
-        .with_module_level("tungstenite", LevelFilter::Warn)
-        .init()
-        .unwrap();
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
-    let app = App::new();
-    info!("Visit http://{}/index.html to start", &addr);
-    app.serve(&addr).await?;
-    Ok(())
 }
 
 const CLIENT_HTML_TEMPLATE: &[u8] = include_bytes!("../templates/index.html.template");
