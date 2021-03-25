@@ -7,7 +7,7 @@ use {
         stream, StreamExt, SinkExt,
         FutureExt,
         future::{join_all, ok, ready, Ready, Either::{Left, Right}},
-        channel::mpsc,
+        channel::mpsc, channel::oneshot
     },
     hyper::{
         Body,
@@ -67,28 +67,46 @@ impl App {
     }
 
     pub async fn serve(mut self, addr: &SocketAddr) -> Result<(), hyper::Error> {
-        let (tx, rx) = mpsc::unbounded();
         // We have to be able to take the Signal out of self so that we can pass self.app_main to
         // spawn...
-        let mut sigint = self.sigint.take().unwrap();
-        let handle = tokio::task::spawn(self.app_main(rx));
+        let (graceful_rx, hard_rx) = Self::watch_sigint(self.sigint.take().unwrap());
+        // FIXME: Name this channel better:
+        let (tx, rx) = mpsc::unbounded();
+        let handle = tokio::task::spawn(self.app_main(rx, hard_rx));
         let server_builder = Server::bind(addr);
         info!("Visit http://{}/index.html to start", &addr);
         let server = server_builder
             .serve(ConnectionHandler { tx })
-            .with_graceful_shutdown(sigint.recv().map(|o| o.unwrap_or(())));
+            .with_graceful_shutdown(graceful_rx.map(|r| r.expect("cancelled instead")));
         // If we just do this one next on the stream, there's no point in wrapping the
         // Signal::recv()...
         server.await?;
         Ok(handle.await.expect("join error"))
     }
 
-    async fn app_main(mut self, rx: mpsc::UnboundedReceiver<AppCmd>) {
-        let mut rx = rx.map(|x| Right::<(), _>(x));
+    fn watch_sigint(mut sigint: Signal) -> (oneshot::Receiver<()>, mpsc::Receiver<()>) {
+        let (graceful_tx, graceful_rx) = oneshot::channel();
+        let (mut hard_tx, hard_rx) = mpsc::channel(1);
+        tokio::task::spawn(async move {
+            sigint.recv().await;
+            warn!("SIGINT - waiting for clients to disconnect. Interrupt again to force-quit");
+            graceful_tx.send(()).expect("bad graceful send");
+            sigint.recv().await;
+            hard_tx.send(()).await.expect("bad hard send");
+        });
+        (graceful_rx, hard_rx)
+    }
+
+    async fn app_main(mut self, rx: mpsc::UnboundedReceiver<AppCmd>, hard_shutdown_rx: mpsc::Receiver<()>) {
+        let mut both = stream::select(
+            hard_shutdown_rx.map(|x| Left(x)),
+            rx.map(|x| Right(x))
+        );
         loop {
-            match rx.next().await {
+            match both.next().await {
                 Some(Left(_)) => {
-                    warn!("someone hit ctrl-c on me, the cheek!");
+                    warn!("someone hit ctrl-c on me, the cheek! Terminating client connections...");
+                    self.send_all(Message::Close(None)).await;
                     break
                 },
                 Some(Right(cmd)) => match cmd {
@@ -105,11 +123,7 @@ impl App {
                         Message::Binary(b) => todo!(),
                         Message::Text(s) => {
                             info!("Server received text {:?}", s);
-                            join_all(self.clients.values_mut().map(
-                                |client| client.tx.send(
-                                    ClientEvent::AppMsg(Message::Text(s.clone()))
-                                )
-                            )).await;
+                            self.send_all(Message::Text(s.clone())).await;
                         }
                         Message::Ping(b) => {
                             self.clients.get_mut(&client_id).expect("no client?").tx.send(
@@ -127,6 +141,12 @@ impl App {
             }
         }
     }
+
+    async fn send_all(&mut self, msg: Message) {
+        join_all(self.clients.values_mut().map(
+            |client| client.tx.send(ClientEvent::AppMsg(msg.clone()))
+        )).await;
+    }
 }
 
 enum AppCmd {
@@ -140,7 +160,7 @@ struct Client {
 
 enum ClientEvent {
     ClientId(u16),
-    AppMsg(Message)
+    AppMsg(Message),
 }
 
 struct ConnectionHandler {
@@ -305,8 +325,14 @@ async fn websocket_dialogue(mut app_tx: mpsc::UnboundedSender<AppCmd>, upgraded:
             },
             Some(Right(client_event)) => match client_event {
                 ClientEvent::ClientId(id) => client_id = Some(id),
-                ClientEvent::AppMsg(msg) =>
-                    ws_tx.send(msg).await.expect("how can sending fail?"),
+                ClientEvent::AppMsg(msg) => match msg {
+                    Message::Close(x) => {
+                        ws_tx.send(Message::Close(x)).await.expect("moar fail sending");
+                        warn!("App told client it was closing, terminating dialogue");
+                        break Ok(())
+                    },
+                    _ => ws_tx.send(msg).await.expect("how can sending fail?"),
+                }
             },
             None => {
                 warn!("End of both streams?");
