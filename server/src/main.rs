@@ -3,7 +3,11 @@ use {
         digest::Digest,
         sha1::Sha1,
     },
-    futures::{StreamExt, SinkExt},
+    futures::{
+        StreamExt, SinkExt,
+        future::{join_all, select, ok, ready, Ready, Either},
+        channel::mpsc,
+    },
     hyper::{
         Body,
         body::Bytes,
@@ -13,7 +17,7 @@ use {
         StatusCode,
         header,
         http,
-        service::{make_service_fn, service_fn},
+        service::{Service},
     },
     log::{info, error, warn, LevelFilter},
     simple_logger::SimpleLogger,
@@ -21,6 +25,7 @@ use {
         str,
         convert::Infallible,
         net::SocketAddr,
+        task::{Context, Poll},
     },
     tokio_tungstenite::{
         tungstenite::protocol::{Role, Message},
@@ -29,8 +34,47 @@ use {
 };
 
 
+enum AppCmd {
+    NewClient(mpsc::UnboundedSender<String>),
+    ClientMsg(Message),
+}
+
+
+struct App { tx: mpsc::UnboundedSender<AppCmd> }
+
+impl<Conn> Service<Conn> for App {
+    type Response = RequestHandler;
+    type Error = Infallible;
+    type Future = Ready<Result<Self::Response, Self::Error>>;
+
+    fn poll_ready(&mut self, _: &mut Context) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, _: Conn) -> Self::Future {
+        ok(RequestHandler { tx: self.tx.clone() })
+    }
+}
+
+struct RequestHandler { tx: mpsc::UnboundedSender<AppCmd> }
+
+impl Service<Request<Body>> for RequestHandler {
+    type Response = Response<Body>;
+    type Error = http::Error;
+    type Future = Ready<Result<Self::Response, Self::Error>>;
+
+    fn poll_ready(&mut self, _: &mut Context) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: Request<Body>) -> Self::Future {
+        ready(handle_request(&self.tx, req))
+    }
+}
+
+
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     SimpleLogger::new()
         .with_module_level("mio", LevelFilter::Warn)
         .with_module_level("tokio_tungstenite", LevelFilter::Warn)
@@ -39,13 +83,35 @@ async fn main() {
         .unwrap();
     let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
 
-    let mk_svc = make_service_fn(|_conn| async {
-        Ok::<_, Infallible>(service_fn(handle_request))
-    });
+    let (tx, mut rx) = mpsc::unbounded();
 
-    let server = Server::bind(&addr).serve(mk_svc);
+    tokio::task::spawn(async move {
+        let mut client_txs = Vec::new();
+        loop {
+            match rx.next().await {
+                Some(cmd) => match cmd {
+                    AppCmd::NewClient(client_tx) => {
+                        info!("new client connected!");
+                        client_txs.push(client_tx);
+                    },
+                    AppCmd::ClientMsg(msg) => match msg {
+                        Message::Text(s) => {
+                            info!("Server received text {:?}", s);
+                            join_all(client_txs.iter_mut().map(|tx| tx.send(s.clone()))).await;
+                        }
+                        // FIXME: One of the things we receive here is a close, and we should
+                        // remove the client_tx when we get that!
+                        x => warn!("Server received not text {:?}", x)
+                    }
+                }
+                None => break
+            }
+        }
+    });
+    let server = Server::bind(&addr).serve(App { tx });
     info!("Visit http://0.0.0.0:8080/index.html to start");
-    server.await;
+    server.await?;
+    Ok(())
 }
 
 const CLIENT_HTML_TEMPLATE: &[u8] = include_bytes!("../templates/index.html.template");
@@ -71,14 +137,14 @@ const CLIENT_WASM: Bytes = Bytes::from_static(
     include_bytes!("../../client/static/wasm_hello_world_bg.wasm")
 );
 
-async fn handle_request(req: Request<Body>) -> Result<Response<Body>, http::Error> {
+fn handle_request(tx: &mpsc::UnboundedSender<AppCmd>, req: Request<Body>) -> Result<Response<Body>, http::Error> {
     if req.method() != http::Method::GET {
         return err_resp(StatusCode::METHOD_NOT_ALLOWED);
     }
     // TODO: The URI scheme doesn't seem to get supplied, so we can't use that to switch handler
     // :-(
     if req.headers().contains_key(header::UPGRADE) {
-        handle_ws(req)
+        handle_ws(tx, req)
     } else {
         handle_get(req)
     }
@@ -115,7 +181,7 @@ fn err_resp(code: StatusCode) -> Result<Response<Body>, http::Error> {
     Response::builder().status(code).body(Body::empty())
 }
 
-fn handle_ws(mut req: Request<Body>) -> Result<Response<Body>, http::Error> {
+fn handle_ws(tx: &mpsc::UnboundedSender<AppCmd>, mut req: Request<Body>) -> Result<Response<Body>, http::Error> {
     if req.headers().get(header::UPGRADE) != Some(&hv("websocket")) ||
             req.headers().get("sec-websocket-version") != Some(&hv("13")) {
         return err_resp(StatusCode::BAD_REQUEST);
@@ -130,10 +196,11 @@ fn handle_ws(mut req: Request<Body>) -> Result<Response<Body>, http::Error> {
         Some(key) => mk_accept_header(key.as_bytes())
     };
 
+    let tx = tx.clone();
     tokio::task::spawn(async move {
         match hyper::upgrade::on(&mut req).await {
             Ok(upgraded) => {
-                if let Err(e) = websocket_dialogue(upgraded).await {
+                if let Err(e) = websocket_dialogue(tx, upgraded).await {
                     error!("server websocket IO error: {}", e)
                 }
             },
@@ -158,23 +225,44 @@ fn hv(string: &'static str) -> header::HeaderValue {
 }
 
 
-async fn websocket_dialogue(upgraded: hyper::upgrade::Upgraded) -> Result<(), hyper::Error> {
-    let mut wss = WebSocketStream::from_raw_socket(upgraded, Role::Server, Default::default()).await;
+async fn websocket_dialogue(mut app_tx: mpsc::UnboundedSender<AppCmd>, upgraded: hyper::upgrade::Upgraded) -> Result<(), hyper::Error> {
+    let (mut ws_tx, mut ws_rx) = WebSocketStream::from_raw_socket(upgraded, Role::Server, Default::default())
+        .await.split();
+    let (client_tx, mut client_rx) = mpsc::unbounded();
+    app_tx.send(AppCmd::NewClient(client_tx)).await;
+    let mut wss_fut = ws_rx.next();
+    let mut app_fut = client_rx.next();
     loop {
-        match wss.next().await {
-            Some(x) => match x {
-                Ok(msg) => match msg {
-                    Message::Text(s) => {
-                        info!("Server received text {:?}", s);
-                        wss.send(Message::Text(s)).await.expect("how can sending fail?");
+        match select(wss_fut, app_fut).await {
+            Either::Left((ws_data, pending_app_fut)) => {
+                wss_fut = ws_rx.next();
+                app_fut = pending_app_fut;
+                match ws_data {
+                    Some(x) => match x {
+                        Ok(msg) => {
+                            app_tx.send(AppCmd::ClientMsg(msg)).await;
+                        },
+                        Err(e) => error!("Server errored! {:?}", e)
+                    },
+                    None => {
+                        warn!("End of stream?");
+                        break Ok(())
                     }
-                    x => warn!("Server received not test {:?}", x)
-                },
-                Err(e) => error!("Server errored! {:?}", e)
+                }
             },
-            None => {
-                warn!("End of stream?");
-                break Ok(())
+
+            Either::Right((app_data, pending_wss_fut)) => {
+                wss_fut = pending_wss_fut;
+                app_fut = client_rx.next();
+                match app_data {
+                    Some(string) =>
+                        ws_tx.send(Message::Text(string))
+                            .await.expect("how can sending fail?"),
+                    None => {
+                        warn!("App stopped sending to client?!");
+                        break Ok(())
+                    }
+                }
             }
         }
     }
