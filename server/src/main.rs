@@ -57,19 +57,19 @@ enum AppCmd {
 struct App { }
 
 impl App {
-    fn new() -> Self {
+    pub fn new() -> Self {
         App { }
     }
 
-    async fn serve(self, addr: &SocketAddr) -> Result<(), hyper::Error> {
+    pub async fn serve(self, addr: &SocketAddr) -> Result<(), hyper::Error> {
         let (tx, rx) = mpsc::unbounded();
-        tokio::task::spawn(Self::something(rx));
+        tokio::task::spawn(Self::app_main(rx));
         let server = Server::bind(addr);
         info!("Visit http://{}/index.html to start", &addr);
         server.serve(ConnectionHandler { tx }).await
     }
 
-    async fn something(mut rx: mpsc::UnboundedReceiver<AppCmd>) -> () {
+    async fn app_main(mut rx: mpsc::UnboundedReceiver<AppCmd>) -> () {
         let mut client_txs = Vec::new();
         loop {
             match rx.next().await {
