@@ -93,7 +93,11 @@ impl App {
                                 )
                             )).await;
                         }
-                        Message::Ping(b) => todo!(),
+                        Message::Ping(b) => {
+                            self.clients.get_mut(&client_id).expect("no client?").tx.send(
+                                ClientEvent::AppMsg(Message::Pong(b))
+                            ).await;
+                        },
                         Message::Pong(b) => todo!(),
                         Message::Close(b) => {
                             warn!("client {} disconnected with {:?}", client_id, b);
