@@ -47,13 +47,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
-
-enum AppCmd {
-    NewClient(mpsc::UnboundedSender<String>),
-    ClientMsg(Message),
-}
-
-
 struct App { }
 
 impl App {
@@ -92,6 +85,11 @@ impl App {
             }
         }
     }
+}
+
+enum AppCmd {
+    NewClient(mpsc::UnboundedSender<String>),
+    ClientMsg(Message),
 }
 
 struct ConnectionHandler {
