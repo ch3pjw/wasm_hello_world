@@ -42,10 +42,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .with_module_level("tungstenite", LevelFilter::Warn)
         .init()
         .unwrap();
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
     let app = App::new();
-    info!("Visit http://{}/index.html to start", &addr);
-    app.serve(&addr).await?;
+    app.serve(&SocketAddr::from(([0, 0, 0, 0], 8080))).await?;
     Ok(())
 }
 
@@ -66,7 +64,9 @@ impl App {
     async fn serve(self, addr: &SocketAddr) -> Result<(), hyper::Error> {
         let (tx, rx) = mpsc::unbounded();
         tokio::task::spawn(Self::something(rx));
-        Server::bind(addr).serve(ConnectionHandler { tx }).await
+        let server = Server::bind(addr);
+        info!("Visit http://{}/index.html to start", &addr);
+        server.serve(ConnectionHandler { tx }).await
     }
 
     async fn something(mut rx: mpsc::UnboundedReceiver<AppCmd>) -> () {
