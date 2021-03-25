@@ -4,8 +4,8 @@ use {
         sha1::Sha1,
     },
     futures::{
-        StreamExt, SinkExt,
-        future::{join_all, select, ok, ready, Ready, Either},
+        stream, StreamExt, SinkExt,
+        future::{join_all, ok, ready, Ready, Either::{Left, Right}},
         channel::mpsc,
     },
     hyper::{
@@ -268,52 +268,36 @@ fn hv(string: &'static str) -> header::HeaderValue {
 
 
 async fn websocket_dialogue(mut app_tx: mpsc::UnboundedSender<AppCmd>, upgraded: hyper::upgrade::Upgraded) -> Result<(), hyper::Error> {
-    let (mut ws_tx, mut ws_rx) = WebSocketStream::from_raw_socket(upgraded, Role::Server, Default::default())
+    let (mut ws_tx, ws_rx) = WebSocketStream::from_raw_socket(upgraded, Role::Server, Default::default())
         .await.split();
-    let (client_tx, mut client_rx) = mpsc::unbounded();
+    let (client_tx, client_rx) = mpsc::unbounded();
     app_tx.send(AppCmd::NewClient(client_tx)).await;
     let mut client_id = None;
 
-    let mut wss_fut = ws_rx.next();
-    let mut app_fut = client_rx.next();
+    let mut both = stream::select(
+        ws_rx.map(|x| Left(x)),
+        client_rx.map(|x| Right(x))
+    );
     loop {
-        match select(wss_fut, app_fut).await {
-            Either::Left((ws_data, pending_app_fut)) => {
-                wss_fut = ws_rx.next();
-                app_fut = pending_app_fut;
-                match ws_data {
-                    Some(x) => match x {
-                        Ok(msg) => {
-                            app_tx.send(AppCmd::ClientMsg(client_id.unwrap(), msg)).await;
-                        },
-                        Err(e) => error!("Server errored! {:?}", e)
-                    },
-                    None => {
-                        warn!("End of stream?");
-                        break Ok(())
-                    }
-                }
+        match both.next().await {
+            Some(Left(ws_data)) => match ws_data {
+                Ok(msg) => {
+                    app_tx.send(AppCmd::ClientMsg(client_id.unwrap(), msg)).await;
+                },
+                Err(e) => error!("Server errored! {:?}", e)
             },
-
-            Either::Right((app_data, pending_wss_fut)) => {
-                wss_fut = pending_wss_fut;
-                app_fut = client_rx.next();
-                match app_data {
-                    Some(evt) => match evt {
-                        ClientEvent::ClientId(id) => client_id = Some(id),
-                        ClientEvent::AppMsg(msg) =>
-                            ws_tx.send(msg).await.expect("how can sending fail?"),
-                    },
-                    None => {
-                        warn!("App stopped sending to client?!");
-                        break Ok(())
-                    }
-                }
+            Some(Right(client_event)) => match client_event {
+                ClientEvent::ClientId(id) => client_id = Some(id),
+                ClientEvent::AppMsg(msg) =>
+                    ws_tx.send(msg).await.expect("how can sending fail?"),
+            },
+            None => {
+                warn!("End of both streams?");
+                break Ok(())
             }
         }
     }
 }
-
 
 fn mk_accept_header(key_header: &[u8]) -> String {
     let mut hasher = Sha1::new();
