@@ -23,6 +23,7 @@ use {
     simple_logger::SimpleLogger,
     std::{
         str,
+        collections::BTreeMap,
         convert::Infallible,
         net::SocketAddr,
         task::{Context, Poll},
@@ -48,15 +49,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 }
 
 struct App {
-    clients: Vec<Client>
+    clients: BTreeMap<u16, Client>,
+    next_client_id: u16,
 }
 
 impl App {
     pub fn new() -> Self {
-        App { clients: Vec::new() }
+        App {
+            clients: BTreeMap::new(),
+            next_client_id: 0,
+        }
     }
 
-    pub async fn serve(mut self, addr: &SocketAddr) -> Result<Self, hyper::Error> {
+    pub async fn serve(self, addr: &SocketAddr) -> Result<Self, hyper::Error> {
         let (tx, rx) = mpsc::unbounded();
         let handle = tokio::task::spawn(self.app_main(rx));
         let server = Server::bind(addr);
@@ -69,21 +74,31 @@ impl App {
         loop {
             match rx.next().await {
                 Some(cmd) => match cmd {
-                    AppCmd::NewClient(client_tx) => {
-                        info!("new client connected!");
-                        self.clients.push(Client { tx: client_tx });
+                    AppCmd::NewClient(mut client_tx) => {
+                        let id = self.next_client_id;
+                        info!("new client ({}) connected!", id);
+                        client_tx.send(ClientEvent::ClientId(id)).await;
+                        let result = self.clients.insert(id, Client { tx: client_tx });
+                        // FIXME: replace with Option::expect_none() when in stable:
+                        if let Some(_client) = result { panic!("client ID already in map") }
+                        self.next_client_id += 1;
                     },
-                    AppCmd::ClientMsg(msg) => match msg {
+                    AppCmd::ClientMsg(client_id, msg) => match msg {
                         Message::Binary(b) => todo!(),
                         Message::Text(s) => {
                             info!("Server received text {:?}", s);
-                            join_all(self.clients.iter_mut().map(
-                                |client| client.tx.send(Message::Text(s.clone()))
+                            join_all(self.clients.values_mut().map(
+                                |client| client.tx.send(
+                                    ClientEvent::AppMsg(Message::Text(s.clone()))
+                                )
                             )).await;
                         }
                         Message::Ping(b) => todo!(),
                         Message::Pong(b) => todo!(),
-                        Message::Close(b) => todo!("remove client_tx!"),
+                        Message::Close(b) => {
+                            warn!("client {} disconnected with {:?}", client_id, b);
+                            self.clients.remove(&client_id).expect("no client in map");
+                        }
                     }
                 }
                 None => break
@@ -93,13 +108,18 @@ impl App {
     }
 }
 
-struct Client {
-    tx: mpsc::UnboundedSender<Message>
+enum AppCmd {
+    NewClient(mpsc::UnboundedSender<ClientEvent>),
+    ClientMsg(u16, Message),
 }
 
-enum AppCmd {
-    NewClient(mpsc::UnboundedSender<Message>),
-    ClientMsg(Message),
+struct Client {
+    tx: mpsc::UnboundedSender<ClientEvent>
+}
+
+enum ClientEvent {
+    ClientId(u16),
+    AppMsg(Message)
 }
 
 struct ConnectionHandler {
@@ -248,6 +268,8 @@ async fn websocket_dialogue(mut app_tx: mpsc::UnboundedSender<AppCmd>, upgraded:
         .await.split();
     let (client_tx, mut client_rx) = mpsc::unbounded();
     app_tx.send(AppCmd::NewClient(client_tx)).await;
+    let mut client_id = None;
+
     let mut wss_fut = ws_rx.next();
     let mut app_fut = client_rx.next();
     loop {
@@ -258,7 +280,7 @@ async fn websocket_dialogue(mut app_tx: mpsc::UnboundedSender<AppCmd>, upgraded:
                 match ws_data {
                     Some(x) => match x {
                         Ok(msg) => {
-                            app_tx.send(AppCmd::ClientMsg(msg)).await;
+                            app_tx.send(AppCmd::ClientMsg(client_id.unwrap(), msg)).await;
                         },
                         Err(e) => error!("Server errored! {:?}", e)
                     },
@@ -273,7 +295,11 @@ async fn websocket_dialogue(mut app_tx: mpsc::UnboundedSender<AppCmd>, upgraded:
                 wss_fut = pending_wss_fut;
                 app_fut = client_rx.next();
                 match app_data {
-                    Some(msg) => ws_tx.send(msg).await.expect("how can sending fail?"),
+                    Some(evt) => match evt {
+                        ClientEvent::ClientId(id) => client_id = Some(id),
+                        ClientEvent::AppMsg(msg) =>
+                            ws_tx.send(msg).await.expect("how can sending fail?"),
+                    },
                     None => {
                         warn!("App stopped sending to client?!");
                         break Ok(())
