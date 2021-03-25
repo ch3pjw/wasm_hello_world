@@ -53,6 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 struct App {
     sigint: Option<Signal>,
+    shutting_down: bool,
     clients: BTreeMap<u16, Client>,
     next_client_id: u16,
 }
@@ -61,6 +62,7 @@ impl App {
     pub fn new(sigint: Signal) -> Self {
         App {
             sigint: Some(sigint),
+            shutting_down: false,
             clients: BTreeMap::new(),
             next_client_id: 0,
         }
@@ -69,10 +71,10 @@ impl App {
     pub async fn serve(mut self, addr: &SocketAddr) -> Result<(), hyper::Error> {
         // We have to be able to take the Signal out of self so that we can pass self.app_main to
         // spawn...
-        let (graceful_rx, hard_rx) = Self::watch_sigint(self.sigint.take().unwrap());
+        let (graceful_rx, app_main_shutdown_rx) = Self::watch_sigint(self.sigint.take().unwrap());
         // FIXME: Name this channel better:
         let (tx, rx) = mpsc::unbounded();
-        let handle = tokio::task::spawn(self.app_main(rx, hard_rx));
+        let handle = tokio::task::spawn(self.app_main(rx, app_main_shutdown_rx));
         let server_builder = Server::bind(addr);
         info!("Visit http://{}/index.html to start", &addr);
         let server = server_builder
@@ -84,30 +86,41 @@ impl App {
         Ok(handle.await.expect("join error"))
     }
 
-    fn watch_sigint(mut sigint: Signal) -> (oneshot::Receiver<()>, mpsc::Receiver<()>) {
+    fn watch_sigint(mut sigint: Signal) -> (oneshot::Receiver<()>, mpsc::Receiver<AppShutdown>) {
         let (graceful_tx, graceful_rx) = oneshot::channel();
-        let (mut hard_tx, hard_rx) = mpsc::channel(1);
+        let (mut app_main_tx, app_main_rx) = mpsc::channel(2);
         tokio::task::spawn(async move {
             sigint.recv().await;
-            warn!("SIGINT - waiting for clients to disconnect. Interrupt again to force-quit");
+            app_main_tx.send(AppShutdown::Soft).await.expect("bad send");
             graceful_tx.send(()).expect("bad graceful send");
             sigint.recv().await;
-            hard_tx.send(()).await.expect("bad hard send");
+            app_main_tx.send(AppShutdown::Hard).await.expect("bad send");
         });
-        (graceful_rx, hard_rx)
+        (graceful_rx, app_main_rx)
     }
 
-    async fn app_main(mut self, rx: mpsc::UnboundedReceiver<AppCmd>, hard_shutdown_rx: mpsc::Receiver<()>) {
+    async fn app_main(mut self, rx: mpsc::UnboundedReceiver<AppCmd>, shutdown_rx: mpsc::Receiver<AppShutdown>) {
         let mut both = stream::select(
-            hard_shutdown_rx.map(|x| Left(x)),
+            shutdown_rx.map(|x| Left(x)),
             rx.map(|x| Right(x))
         );
         loop {
             match both.next().await {
-                Some(Left(_)) => {
-                    warn!("someone hit ctrl-c on me, the cheek! Terminating client connections...");
-                    self.send_all(Message::Close(None)).await;
-                    break
+                Some(Left(shutdown)) => match shutdown {
+                    AppShutdown::Soft => {
+                        if self.clients.len() == 0 {
+                            warn!("SIGINT - no clients, bye!");
+                            break
+                        } else {
+                            warn!("SIGINT - waiting for clients to disconnect. Interrupt again to force-quit");
+                            self.shutting_down = true;
+                        }
+                    },
+                    AppShutdown::Hard => {
+                        warn!("Hard app shutdown, closing remaining connections...");
+                        self.send_all(Message::Close(None)).await;
+                        break
+                    }
                 },
                 Some(Right(cmd)) => match cmd {
                     AppCmd::NewClient(mut client_tx) => {
@@ -133,7 +146,13 @@ impl App {
                         Message::Pong(b) => todo!(),
                         Message::Close(b) => {
                             warn!("client {} disconnected with {:?}", client_id, b);
+                            // FIXME: I think technically we're supposed to reply with a Close
+                            // too...
                             self.clients.remove(&client_id).expect("no client in map");
+                            if self.shutting_down && self.clients.len() == 0 {
+                                info!("Last client left, bye!");
+                                break
+                            }
                         }
                     }
                 }
@@ -153,6 +172,8 @@ enum AppCmd {
     NewClient(mpsc::UnboundedSender<ClientEvent>),
     ClientMsg(u16, Message),
 }
+
+enum AppShutdown { Soft, Hard }
 
 struct Client {
     tx: mpsc::UnboundedSender<ClientEvent>
@@ -334,10 +355,7 @@ async fn websocket_dialogue(mut app_tx: mpsc::UnboundedSender<AppCmd>, upgraded:
                     _ => ws_tx.send(msg).await.expect("how can sending fail?"),
                 }
             },
-            None => {
-                warn!("End of both streams?");
-                break Ok(())
-            }
+            None => break Ok(())
         }
     }
 }
