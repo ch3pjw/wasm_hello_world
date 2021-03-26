@@ -170,33 +170,7 @@ fn handle_request(req: Request<Body>, tx: mpsc::UnboundedSender<AppCmd>) -> Resu
         // handler :-(
         handle_ws(&tx, req)
     } else {
-        handle_get(req)
-    }
-}
-
-fn handle_get(req: Request<Body>) -> Result<Response<Body>, http::Error> {
-    let b = Response::builder();
-    let x = match req.uri().path() {
-        "/" | "/index.html" => {
-            if let Some(host) = req.headers().get("host") {
-                Some(("text/html", resources::generate_client_html(host.as_bytes())))
-            } else {
-                warn!("Request missing host header!");
-                None
-            }
-        },
-        "/wasm_hello_world.js" => Some(("application/javascript", resources::CLIENT_JS)),
-        "/wasm_hello_world_bg.wasm" => Some(("application/wasm", resources::CLIENT_WASM)),
-        path => {
-            warn!("Requested missing path: {}", path);
-            None
-        }
-    };
-    match x {
-        None => b.status(StatusCode::NOT_FOUND).body(Body::empty()),
-        Some((content_type, bytes)) => b
-            .header(header::CONTENT_TYPE, content_type)
-            .body(Body::from(bytes)),
+        resources::handle_get(req)
     }
 }
 
