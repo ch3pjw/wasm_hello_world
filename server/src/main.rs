@@ -1,8 +1,4 @@
 use {
-    crypto::{
-        digest::Digest,
-        sha1::Sha1,
-    },
     futures::{
         stream, StreamExt, SinkExt,
         FutureExt,
@@ -21,7 +17,6 @@ use {
     log::{info, error, warn, LevelFilter},
     simple_logger::SimpleLogger,
     std::{
-        str,
         collections::BTreeMap,
         net::SocketAddr,
     },
@@ -34,8 +29,10 @@ use {
 
 mod service;
 mod resources;
+mod hyper_helpers;
 
 use crate::service::ConnectionHandler;
+use crate::hyper_helpers::{hv, mk_accept_header, err_resp};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -219,11 +216,6 @@ fn handle_get(req: Request<Body>) -> Result<Response<Body>, http::Error> {
     }
 }
 
-
-fn err_resp(code: StatusCode) -> Result<Response<Body>, http::Error> {
-    Response::builder().status(code).body(Body::empty())
-}
-
 fn handle_ws(tx: &mpsc::UnboundedSender<AppCmd>, mut req: Request<Body>) -> Result<Response<Body>, http::Error> {
     if req.headers().get(header::UPGRADE) != Some(&hv("websocket")) ||
             req.headers().get("sec-websocket-version") != Some(&hv("13")) {
@@ -263,10 +255,6 @@ fn handle_ws(tx: &mpsc::UnboundedSender<AppCmd>, mut req: Request<Body>) -> Resu
     return Ok(resp);
 }
 
-fn hv(string: &'static str) -> header::HeaderValue {
-    header::HeaderValue::from_static(string)
-}
-
 
 async fn websocket_dialogue(mut app_tx: mpsc::UnboundedSender<AppCmd>, upgraded: hyper::upgrade::Upgraded) -> Result<(), hyper::Error> {
     let (mut ws_tx, ws_rx) = WebSocketStream::from_raw_socket(upgraded, Role::Server, Default::default())
@@ -304,26 +292,5 @@ async fn websocket_dialogue(mut app_tx: mpsc::UnboundedSender<AppCmd>, upgraded:
             },
             None => break Ok(())
         }
-    }
-}
-
-fn mk_accept_header(key_header: &[u8]) -> String {
-    let mut hasher = Sha1::new();
-    hasher.input(key_header);
-    // A magic UUID that makes it go (https://en.wikipedia.org/wiki/WebSocket)
-    hasher.input(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
-    let mut hashed = vec![0u8; hasher.output_bytes()];
-    hasher.result(&mut hashed);
-    base64::encode(hashed)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_accept_header() {
-        // Example taken from https://en.wikipedia.org/wiki/WebSocket
-        assert_eq!(mk_accept_header(b"x3JJHMbDL1EzLkh9GBhXDw=="), "HSmrc0sMlYUkAGmm5OPpG2HaGWk=")
     }
 }
