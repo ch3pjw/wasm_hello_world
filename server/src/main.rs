@@ -338,10 +338,10 @@ async fn websocket_dialogue(mut app_tx: mpsc::UnboundedSender<AppCmd>, upgraded:
         match both.next().await {
             Some(Left(ws_data)) => match ws_data {
                 Ok(msg) => {
-                    if let Message::Close(ref x) = msg {
-                        // Make sure we tell the client we accept their close:
-                        ws_tx.send(msg.clone()).await.expect("le fail");
-                    }
+                    // if let Message::Close(ref x) = msg {
+                        // // Make sure we tell the client we accept their close:
+                        // ws_tx.send(msg.clone()).await.expect("le fail");
+                    // }
                     app_tx.send(AppCmd::ClientMsg(client_id.unwrap(), msg)).await;
                 },
                 Err(e) => error!("Server errored! {:?}", e)
