@@ -6,7 +6,7 @@ use {
     futures::{
         stream, StreamExt, SinkExt,
         FutureExt,
-        future::{join_all, ok, ready, Ready, Either::{Left, Right}},
+        future::{join_all, Either::{Left, Right}},
         channel::mpsc, channel::oneshot
     },
     hyper::{
@@ -18,16 +18,13 @@ use {
         StatusCode,
         header,
         http,
-        service::{Service},
     },
     log::{info, error, warn, LevelFilter},
     simple_logger::SimpleLogger,
     std::{
         str,
         collections::BTreeMap,
-        convert::Infallible,
         net::SocketAddr,
-        task::{Context, Poll},
     },
     tokio::signal::unix::{signal, Signal, SignalKind},
     tokio_tungstenite::{
@@ -36,6 +33,9 @@ use {
     },
 };
 
+mod service;
+
+use crate::service::ConnectionHandler;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -72,18 +72,17 @@ impl App {
         // We have to be able to take the Signal out of self so that we can pass self.app_main to
         // spawn...
         let (graceful_rx, app_main_shutdown_rx) = Self::watch_sigint(self.sigint.take().unwrap());
-        // FIXME: Name this channel better:
-        let (tx, rx) = mpsc::unbounded();
-        let handle = tokio::task::spawn(self.app_main(rx, app_main_shutdown_rx));
+        let (conn_handler, cmd_rx) = ConnectionHandler::new(&handle_request);
+        let app_main_handle = tokio::task::spawn(self.app_main(cmd_rx, app_main_shutdown_rx));
         let server_builder = Server::bind(addr);
         info!("Visit http://{}/index.html to start", &addr);
         let server = server_builder
-            .serve(ConnectionHandler { tx })
+            .serve(conn_handler)
             .with_graceful_shutdown(graceful_rx.map(|r| r.expect("cancelled instead")));
         // If we just do this one next on the stream, there's no point in wrapping the
         // Signal::recv()...
         server.await?;
-        Ok(handle.await.expect("join error"))
+        Ok(app_main_handle.await.expect("join error"))
     }
 
     fn watch_sigint(mut sigint: Signal) -> (oneshot::Receiver<()>, mpsc::Receiver<AppShutdown>) {
@@ -182,46 +181,15 @@ enum ClientEvent {
     AppMsg(Message),
 }
 
-struct ConnectionHandler {
-    tx: mpsc::UnboundedSender<AppCmd>
-}
-
-impl<Conn> Service<Conn> for ConnectionHandler {
-    type Response = RequestHandler;
-    type Error = Infallible;
-    type Future = Ready<Result<Self::Response, Self::Error>>;
-
-    fn poll_ready(&mut self, _: &mut Context) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn call(&mut self, _: Conn) -> Self::Future {
-        ok(RequestHandler { tx: self.tx.clone() })
-    }
-}
-
-struct RequestHandler { tx: mpsc::UnboundedSender<AppCmd> }
-
-impl Service<Request<Body>> for RequestHandler {
-    type Response = Response<Body>;
-    type Error = http::Error;
-    type Future = Ready<Result<Self::Response, Self::Error>>;
-
-    fn poll_ready(&mut self, _: &mut Context) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn call(&mut self, req: Request<Body>) -> Self::Future {
-        let resp = if req.method() != http::Method::GET {
-            err_resp(StatusCode::METHOD_NOT_ALLOWED)
-        } else if req.headers().contains_key(header::UPGRADE) {
-            // TODO: The URI scheme doesn't seem to get supplied, so we can't use that to switch
-            // handler :-(
-            handle_ws(&self.tx, req)
-        } else {
-            handle_get(req)
-        };
-        ready(resp)
+fn handle_request(req: Request<Body>, tx: mpsc::UnboundedSender<AppCmd>) -> Result<Response<Body>, http::Error> {
+    if req.method() != http::Method::GET {
+        err_resp(StatusCode::METHOD_NOT_ALLOWED)
+    } else if req.headers().contains_key(header::UPGRADE) {
+        // TODO: The URI scheme doesn't seem to get supplied, so we can't use that to switch
+        // handler :-(
+        handle_ws(&tx, req)
+    } else {
+        handle_get(req)
     }
 }
 
