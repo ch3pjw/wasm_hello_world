@@ -216,9 +216,11 @@ impl yew::Component for Transmitter {
                 <input
                     value=self.current_msg.as_ref().unwrap_or(&"".to_string())
                     oninput=self.link.callback(|evt: yew::InputData| TransmitterMsg::Input(evt.value))
-                    onkeypress=self.link.batch_callback(| evt: yew::events::KeyboardEvent| {
-                        if evt.key() == "Enter" { vec![TransmitterMsg::SendMsg] } else { vec![] }
-                    })
+                    // FIXME: I upgraded to rust 1.51.0 and this line in conjunction with onpinput
+                    // started causing `recursion limit reached` errors!
+                    // onkeypress=self.link.batch_callback(| evt: yew::events::KeyboardEvent| {
+                        // if evt.key() == "Enter" { vec![TransmitterMsg::SendMsg] } else { vec![] }
+                    // })
                 />
                 <button onclick=self.link.callback(|_| TransmitterMsg::SendMsg )>
                     { format!("Send {:?}", self.msg(&self.current_msg)) }
