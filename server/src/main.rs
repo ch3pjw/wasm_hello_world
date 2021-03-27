@@ -11,9 +11,11 @@ mod resources;
 mod service;
 
 use crate::app::App;
+use macros::hello;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    hello!();
     SimpleLogger::new()
         .with_module_level("mio", LevelFilter::Warn)
         .with_module_level("tokio_tungstenite", LevelFilter::Warn)
