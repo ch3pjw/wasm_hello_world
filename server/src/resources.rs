@@ -9,7 +9,10 @@ use {
         http,
     },
     log::warn,
+    std::str,
 };
+
+use macros::template;
 
 pub fn handle_get(req: Request<Body>) -> Result<Response<Body>, http::Error> {
     let b = Response::builder();
@@ -37,20 +40,11 @@ pub fn handle_get(req: Request<Body>) -> Result<Response<Body>, http::Error> {
     }
 }
 
-const CLIENT_HTML_TEMPLATE: &[u8] = include_bytes!("../templates/index.html.template");
-
 fn generate_client_html(host: &[u8]) -> Bytes {
-    // TODO: can we do this up front?
-    let mut head = CLIENT_HTML_TEMPLATE;
-    let mut tail = &CLIENT_HTML_TEMPLATE[0..0];
-    for (i, pair) in CLIENT_HTML_TEMPLATE.windows(2).enumerate() {
-        if pair == b"{}" {
-            head = &CLIENT_HTML_TEMPLATE[..i];
-            tail = &CLIENT_HTML_TEMPLATE[i+2..];
-            break
-        }
-    }
-    Bytes::from([head, host, tail].concat())
+    Bytes::from(template!(
+        "../templates/index.html.template",
+        str::from_utf8(host).unwrap()
+    ))
 }
 
 const CLIENT_JS: Bytes = Bytes::from_static(
