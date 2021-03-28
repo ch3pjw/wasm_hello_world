@@ -16,4 +16,4 @@ simple_logger = "1.11"
 tokio = { version = "1.3", features = ["macros", "rt-multi-thread", "signal"] }
 tokio-tungstenite = "0.14"
 
-macros = { path = "macros" }
+macros = { path = "../macros" }
