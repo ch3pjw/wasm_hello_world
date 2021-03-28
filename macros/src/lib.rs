@@ -1,6 +1,7 @@
 use {
     proc_macro::{self, TokenStream},
-    quote::quote,
+    proc_macro2::TokenStream as TokenStream2,
+    quote::{quote, ToTokens},
     syn::{
         Expr, ExprLit,
         Lit, LitStr,
@@ -11,8 +12,11 @@ use {
 };
 
 use {
-    std::env,
-    std::fs::read_to_string,
+    semver::{Version, Identifier},
+    std::{
+        env,
+        fs::read_to_string,
+    },
 };
 
 #[proc_macro]
@@ -27,4 +31,36 @@ pub fn template(input: TokenStream) -> TokenStream {
     let s_lit = LitStr::new(&read_to_string(path).unwrap(), path_lit.span());
     let output = quote! { format!(#s_lit, #(#args),*) };
     output.into()
+}
+
+#[proc_macro]
+pub fn cargo_pkg_version(_: TokenStream) -> TokenStream {
+    let version = Version::parse(&env::var("CARGO_PKG_VERSION").unwrap()).unwrap();
+    let major = version.major;
+    let minor = version.minor;
+    let patch = version.patch;
+    let pre = version.pre.iter().map(|x| I(x));
+    let build = version.build.iter().map(|x| I(x));
+    let output = quote! {
+        ::semver::Version {
+            major: #major,
+            minor: #minor,
+            patch: #patch,
+            pre: vec![ #(#pre),* ],
+            build: vec![ #(#build),* ],
+        }
+    };
+    output.into()
+}
+
+struct I<'a>(&'a Identifier);
+
+impl ToTokens for I<'_> {
+    fn to_tokens(&self, tokens: &mut TokenStream2) {
+        let output = match self.0 {
+            Identifier::Numeric(n) => quote! { ::semver::Identifier::Numeric(#n) },
+            Identifier::AlphaNumeric(s) => quote! { ::semver::Identifier::AlphaNumeric(#s) },
+        };
+        tokens.extend(output);
+    }
 }
