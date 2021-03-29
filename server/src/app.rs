@@ -236,16 +236,12 @@ fn handle_ws(tx: &mpsc::UnboundedSender<AppCmd>, mut req: Request<Body>) -> Resu
         }
     });
 
-    let mut resp = Response::new(Body::empty());
-    *resp.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
-    let headers = resp.headers_mut();
-    headers.insert(header::UPGRADE, hv("websocket"));
-    headers.insert(header::CONNECTION, hv("Upgrade"));
-    headers.insert(
-        header::SEC_WEBSOCKET_ACCEPT,
-        HeaderValue::from_str(&sec_websocket_accept_header).expect("this should never fail")
-    );
-    return Ok(resp);
+    Response::builder()
+        .status(StatusCode::SWITCHING_PROTOCOLS)
+        .header(header::UPGRADE, "websocket")
+        .header(header::CONNECTION, "Upgrade")
+        .header(header::SEC_WEBSOCKET_ACCEPT, sec_websocket_accept_header)
+        .body(Body::empty())
 }
 
 
