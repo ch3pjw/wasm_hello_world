@@ -41,6 +41,9 @@ pub fn err_resp(code: StatusCode, message: String) -> Result<Response<Body>, htt
     Response::builder()
         .status(code)
         .header(header::SERVER, server_header())
+        // The Status header is a bit non-standard for the message, but FF doesn't show me 400
+        // response bodies in the network view :-/
+        .header("Status", &message)
         .body(Body::from(message))
 }
 
