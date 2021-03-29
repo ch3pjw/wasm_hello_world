@@ -13,7 +13,7 @@ use {
 
 pub async fn go<'a>(url: &'a str) -> Result<(WebSocket, mpsc::Receiver<WsMsg>), WsError<'a>> {
     let (rcv_tx, rcv_rx) = mpsc::channel(32);
-    let ws = WebSocket::new(url).map_err(
+    let ws = WebSocket::new_with_str(url, "protocols-balh").map_err(
         |e| WsError::ConnectionFailed{ url, err: e }
     )?;
     ws.set_binary_type(web_sys::BinaryType::Arraybuffer);

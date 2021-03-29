@@ -176,7 +176,7 @@ fn handle_request(req: Request<Body>, tx: mpsc::UnboundedSender<AppCmd>) -> Resu
 
 fn handle_ws(tx: &mpsc::UnboundedSender<AppCmd>, mut req: Request<Body>) -> Result<Response<Body>, http::Error> {
     if req.headers().get(header::UPGRADE) != Some(&hv("websocket")) ||
-            req.headers().get("sec-websocket-version") != Some(&hv("13")) {
+            req.headers().get(header::SEC_WEBSOCKET_VERSION) != Some(&hv("13")) {
         return err_resp(StatusCode::BAD_REQUEST);
     }
     if req.uri().path() != "/" {
@@ -184,7 +184,7 @@ fn handle_ws(tx: &mpsc::UnboundedSender<AppCmd>, mut req: Request<Body>) -> Resu
         return err_resp(StatusCode::NOT_FOUND);
     }
 
-    let sec_websocket_accept_header = match req.headers().get("Sec-WebSocket-Key") {
+    let sec_websocket_accept_header = match req.headers().get(header::SEC_WEBSOCKET_KEY) {
         None => { return err_resp(StatusCode::BAD_REQUEST); }
         Some(key) => mk_accept_header(key.as_bytes())
     };
@@ -207,7 +207,7 @@ fn handle_ws(tx: &mpsc::UnboundedSender<AppCmd>, mut req: Request<Body>) -> Resu
     headers.insert(header::UPGRADE, hv("websocket"));
     headers.insert(header::CONNECTION, hv("Upgrade"));
     headers.insert(
-        "Sec-WebSocket-Accept",
+        header::SEC_WEBSOCKET_ACCEPT,
         header::HeaderValue::from_str(&sec_websocket_accept_header).expect("this should never fail")
     );
     return Ok(resp);
