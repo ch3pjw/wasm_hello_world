@@ -242,6 +242,7 @@ fn handle_ws(tx: &mpsc::UnboundedSender<AppCmd>, mut req: Request<Body>) -> Resu
         .header(header::UPGRADE, "websocket")
         .header(header::CONNECTION, "Upgrade")
         .header(header::SEC_WEBSOCKET_ACCEPT, sec_websocket_accept_header)
+        .header(header::SEC_WEBSOCKET_PROTOCOL, expected_protocol)
         .body(Body::empty())
 }
 

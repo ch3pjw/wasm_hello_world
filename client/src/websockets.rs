@@ -4,7 +4,7 @@ use {
         stream::StreamExt,
     },
     js_sys,
-    log::{error, info},
+    log::{error, warn, info},
     std::fmt::Debug,
     thiserror::Error,
     wasm_bindgen::{convert::FromWasmAbi, prelude::*, JsCast},
@@ -12,9 +12,9 @@ use {
 };
 
 pub async fn go<'a>(url: &'a str) -> Result<(WebSocket, mpsc::Receiver<WsMsg>), WsError<'a>> {
+    let protocol = &format!("clapi-{}-{}", common::VERSION.major, common::VERSION.minor);
     let (rcv_tx, rcv_rx) = mpsc::channel(32);
-    let ws = WebSocket::new_with_str(
-        url, &format!("clapi-{}-{}", common::VERSION.major, common::VERSION.minor))
+    let ws = WebSocket::new_with_str(url, protocol)
         .map_err(|e| WsError::ConnectionFailed{ url, err: e }
     )?;
     ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
@@ -49,16 +49,15 @@ pub async fn go<'a>(url: &'a str) -> Result<(WebSocket, mpsc::Receiver<WsMsg>), 
     let (mut connected_tx, mut connected_rx) = mpsc::channel(1);
     set_callback(
         |cb| ws.set_onopen(cb),
-        // FIXME: `e` is blatently not a MessageEvent and will die horribly if I try to look at it
-        // as such, I expect:
         move |e: JsValue| {
-            // FIXME: debug assert the ready state here
-            info!("I have no idea what this event is... {:?}", e);
             send_mpsc(&mut connected_tx, ())
         }
     );
     connected_rx.next().await;
     connected_rx.close();
+    // FIXME: Actual error handling!
+    if ws.ready_state() != WebSocket::OPEN { warn!("WebSocket not in open state!") }
+    if &ws.protocol() != protocol { error!("not speaking the right protocol!") }
     Ok((ws, rcv_rx))
 }
 
