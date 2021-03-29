@@ -33,8 +33,8 @@ pub fn unhv(hv: &header::HeaderValue) -> String {
     }
 }
 
-pub fn server_header() -> header::HeaderValue {
-    header::HeaderValue::from_str(&format!("Concert/{}", common::VERSION)).unwrap()
+pub fn server_header() -> String {
+    format!("Concert/{}", common::VERSION)
 }
 
 pub fn err_resp(code: StatusCode, message: String) -> Result<Response<Body>, http::Error> {
