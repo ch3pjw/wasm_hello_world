@@ -29,7 +29,7 @@ use {
 use {
     common,
     crate::{
-        hyper_helpers::{hv, unhv, mk_accept_header, err_resp},
+        hyper_helpers::{hv, unhv, mk_accept_header, server_header, err_resp},
         resources,
         service::ConnectionHandler,
     },
@@ -238,6 +238,7 @@ fn handle_ws(tx: &mpsc::UnboundedSender<AppCmd>, mut req: Request<Body>) -> Resu
 
     Response::builder()
         .status(StatusCode::SWITCHING_PROTOCOLS)
+        .header(header::SERVER, server_header())
         .header(header::UPGRADE, "websocket")
         .header(header::CONNECTION, "Upgrade")
         .header(header::SEC_WEBSOCKET_ACCEPT, sec_websocket_accept_header)
