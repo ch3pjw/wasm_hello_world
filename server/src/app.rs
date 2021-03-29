@@ -11,7 +11,7 @@ use {
         Response,
         Server,
         StatusCode,
-        header,
+        header, header::HeaderValue,
         http,
     },
     log::{info, error, warn},
@@ -26,10 +26,13 @@ use {
     },
 };
 
-use crate::{
-    hyper_helpers::{hv, mk_accept_header, err_resp},
-    resources,
-    service::ConnectionHandler,
+use {
+    common,
+    crate::{
+        hyper_helpers::{hv, unhv, mk_accept_header, server_header, err_resp},
+        resources,
+        service::ConnectionHandler,
+    },
 };
 
 pub struct App {
@@ -164,7 +167,7 @@ enum ClientEvent {
 
 fn handle_request(req: Request<Body>, tx: mpsc::UnboundedSender<AppCmd>) -> Result<Response<Body>, http::Error> {
     if req.method() != http::Method::GET {
-        err_resp(StatusCode::METHOD_NOT_ALLOWED)
+        err_resp(StatusCode::METHOD_NOT_ALLOWED, "".to_string())
     } else if req.headers().contains_key(header::UPGRADE) {
         // TODO: The URI scheme doesn't seem to get supplied, so we can't use that to switch
         // handler :-(
@@ -175,17 +178,49 @@ fn handle_request(req: Request<Body>, tx: mpsc::UnboundedSender<AppCmd>) -> Resu
 }
 
 fn handle_ws(tx: &mpsc::UnboundedSender<AppCmd>, mut req: Request<Body>) -> Result<Response<Body>, http::Error> {
-    if req.headers().get(header::UPGRADE) != Some(&hv("websocket")) ||
-            req.headers().get("sec-websocket-version") != Some(&hv("13")) {
-        return err_resp(StatusCode::BAD_REQUEST);
-    }
-    if req.uri().path() != "/" {
-        error!("Bad websocket path: {}", req.uri().path());
-        return err_resp(StatusCode::NOT_FOUND);
+    // This function is called based on the presence of the upgrade header ;-)
+    let upgrade = req.headers().get(header::UPGRADE).unwrap();
+    if  upgrade != hv("websocket") {
+        return err_resp(
+            StatusCode::BAD_REQUEST,
+            format!("Upgrade to non-websocket connection ({}) requested", unhv(upgrade))
+        );
     }
 
-    let sec_websocket_accept_header = match req.headers().get("Sec-WebSocket-Key") {
-        None => { return err_resp(StatusCode::BAD_REQUEST); }
+    match req.headers().get(header::SEC_WEBSOCKET_VERSION) {
+        None => return err_resp(
+            StatusCode::BAD_REQUEST,
+            "Missing websocket version header".to_string()
+        ),
+        Some(ws_version) => if ws_version != hv("13") {
+            return err_resp(
+                StatusCode::BAD_REQUEST,
+                format!("Bad websocket version ({}) requested", unhv(ws_version))
+            );
+        }
+    }
+    let expected_protocol = format!("clapi-{}-{}", common::VERSION.major, common::VERSION.minor);
+    match req.headers().get(header::SEC_WEBSOCKET_PROTOCOL) {
+        None => return err_resp(
+            StatusCode::BAD_REQUEST,
+            "Missing websocket protocol header".to_string()
+        ),
+        Some(requested_protocol) =>
+            if requested_protocol != HeaderValue::from_str(&expected_protocol)? {
+                return err_resp(
+                    StatusCode::BAD_REQUEST,
+                    format!("Bad websocket protocol ({}) requested", unhv(requested_protocol))
+                );
+            }
+    }
+
+    if req.uri().path() != "/" { return err_resp(StatusCode::NOT_FOUND, "".to_string()); }
+
+    let sec_websocket_accept_header = match req.headers().get(header::SEC_WEBSOCKET_KEY) {
+        None => return err_resp(
+            StatusCode::BAD_REQUEST,
+            "Missing websocket key header".to_string()
+        ),
         Some(key) => mk_accept_header(key.as_bytes())
     };
 
@@ -201,16 +236,14 @@ fn handle_ws(tx: &mpsc::UnboundedSender<AppCmd>, mut req: Request<Body>) -> Resu
         }
     });
 
-    let mut resp = Response::new(Body::empty());
-    *resp.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
-    let headers = resp.headers_mut();
-    headers.insert(header::UPGRADE, hv("websocket"));
-    headers.insert(header::CONNECTION, hv("Upgrade"));
-    headers.insert(
-        "Sec-WebSocket-Accept",
-        header::HeaderValue::from_str(&sec_websocket_accept_header).expect("this should never fail")
-    );
-    return Ok(resp);
+    Response::builder()
+        .status(StatusCode::SWITCHING_PROTOCOLS)
+        .header(header::SERVER, server_header())
+        .header(header::UPGRADE, "websocket")
+        .header(header::CONNECTION, "Upgrade")
+        .header(header::SEC_WEBSOCKET_ACCEPT, sec_websocket_accept_header)
+        .header(header::SEC_WEBSOCKET_PROTOCOL, expected_protocol)
+        .body(Body::empty())
 }
 
 
