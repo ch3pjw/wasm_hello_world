@@ -12,10 +12,13 @@ use {
     std::str,
 };
 
-use macros::template;
+use {
+    crate::hyper_helpers::server_header,
+    macros::template,
+};
 
 pub fn handle_get(req: Request<Body>) -> Result<Response<Body>, http::Error> {
-    let b = Response::builder();
+    let b = Response::builder().header(header::SERVER, server_header());
     let x = match req.uri().path() {
         "/" | "/index.html" => {
             if let Some(host) = req.headers().get("host") {
