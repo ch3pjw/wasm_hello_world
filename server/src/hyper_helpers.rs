@@ -26,6 +26,13 @@ pub fn hv(string: &'static str) -> header::HeaderValue {
     header::HeaderValue::from_static(string)
 }
 
+pub fn unhv(hv: &header::HeaderValue) -> String {
+    match hv.to_str() {
+        Err(e) => format!("<{}>", e),
+        Ok(s) => s.to_string()
+    }
+}
+
 pub fn err_resp(code: StatusCode) -> Result<Response<Body>, http::Error> {
     Response::builder().status(code).body(Body::empty())
 }
