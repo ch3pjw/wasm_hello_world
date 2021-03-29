@@ -33,8 +33,10 @@ pub fn unhv(hv: &header::HeaderValue) -> String {
     }
 }
 
-pub fn err_resp(code: StatusCode) -> Result<Response<Body>, http::Error> {
-    Response::builder().status(code).body(Body::empty())
+pub fn err_resp(code: StatusCode, message: String) -> Result<Response<Body>, http::Error> {
+    Response::builder()
+        .status(code)
+        .body(Body::from(message))
 }
 
 #[cfg(test)]
